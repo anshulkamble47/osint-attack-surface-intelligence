@@ -82,3 +82,54 @@ export interface AssetSummary {
   first_seen_at: string;
   last_seen_at: string;
 }
+
+export interface DNSRecordSummary {
+  id: string;
+  subdomain_id: string;
+  record_type: string;
+  value: string;
+  ttl?: number | null;
+  resolver: string;
+  collected_at: string;
+  scan_run_id?: string | null;
+}
+
+export interface ServiceExposureSummary {
+  id: string;
+  asset_id: string;
+  port: number;
+  protocol: string;
+  service_name: string;
+  http_status?: number | null;
+  page_title?: string | null;
+  observed_at: string;
+  scan_run_id?: string | null;
+}
+
+export interface CandidateResolutionDetail {
+  hostname: string;
+  is_resolving: boolean;
+  is_reachable: boolean;
+  dns_records_count: number;
+  services_count: number;
+  dns_records: DNSRecordSummary[];
+  service_exposures: ServiceExposureSummary[];
+  error?: string | null;
+}
+
+export interface DNSReachabilityResponse {
+  investigation_id: string;
+  scan_run_id: string;
+  target_domain: string;
+  candidates_processed: number;
+  resolved: number;
+  not_resolved: number;
+  reachable: number;
+  unreachable: number;
+  dns_records_discovered: number;
+  services_discovered: number;
+  results: CandidateResolutionDetail[];
+  completed_at: string;
+  note: string;
+}
+

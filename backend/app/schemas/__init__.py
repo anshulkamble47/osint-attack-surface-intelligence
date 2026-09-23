@@ -14,6 +14,10 @@ from backend.app.schemas.investigation import (
     CertificateSummaryResponse,
     CTDiscoveryResponse,
     AssetSummaryResponse,
+    DNSRecordSummaryResponse,
+    ServiceExposureSummaryResponse,
+    CandidateResolutionDetail,
+    DNSReachabilityResponse,
 )
 
 __all__ = [
@@ -28,4 +32,9 @@ __all__ = [
     "CertificateSummaryResponse",
     "CTDiscoveryResponse",
     "AssetSummaryResponse",
+    "DNSRecordSummaryResponse",
+    "ServiceExposureSummaryResponse",
+    "CandidateResolutionDetail",
+    "DNSReachabilityResponse",
 ]
+

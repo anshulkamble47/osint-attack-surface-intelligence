@@ -5,6 +5,9 @@ import {
   InvestigationResponse,
   CTDiscoveryResponse,
   AssetSummary,
+  DNSReachabilityResponse,
+  DNSRecordSummary,
+  ServiceExposureSummary,
 } from '../types/api';
 
 const API_BASE = '/api';
@@ -109,3 +112,32 @@ export async function listInvestigationAssets(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function resolveInvestigation(
+  token: string,
+  investigationId: string
+): Promise<DNSReachabilityResponse> {
+  return request<DNSReachabilityResponse>(`/investigations/${investigationId}/resolve`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationDNSRecords(
+  token: string,
+  investigationId: string
+): Promise<DNSRecordSummary[]> {
+  return request<DNSRecordSummary[]>(`/investigations/${investigationId}/dns-records`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationServices(
+  token: string,
+  investigationId: string
+): Promise<ServiceExposureSummary[]> {
+  return request<ServiceExposureSummary[]>(`/investigations/${investigationId}/services`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+

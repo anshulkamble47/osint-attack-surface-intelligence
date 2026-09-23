@@ -6,9 +6,14 @@ import {
   User,
   Globe,
   FileText,
-  AlertCircle,
-  Lock
+  Lock,
+  Radio,
+  Activity,
+  CheckCircle2,
+  XCircle,
+  Server,
 } from 'lucide-react';
+
 import { 
   fetchHealth, 
   loginUser, 
@@ -16,14 +21,20 @@ import {
   createInvestigation, 
   listInvestigations, 
   runCTDiscovery,
-  listInvestigationAssets 
+  listInvestigationAssets,
+  resolveInvestigation,
+  listInvestigationDNSRecords,
+  listInvestigationServices,
 } from './services/api';
 import { 
   HealthResponse, 
   UserResponse, 
   InvestigationResponse, 
   CTDiscoveryResponse, 
-  AssetSummary 
+  AssetSummary,
+  DNSReachabilityResponse,
+  DNSRecordSummary,
+  ServiceExposureSummary,
 } from './types/api';
 
 export const App: React.FC = () => {
@@ -53,11 +64,18 @@ export const App: React.FC = () => {
   const [creatingInv, setCreatingInv] = useState(false);
   const [invError, setInvError] = useState<string | null>(null);
 
-  // CT Discovery State
+  // Discovery State (Stage 3A & 3B)
   const [runningCT, setRunningCT] = useState(false);
   const [ctResult, setCTResult] = useState<CTDiscoveryResponse | null>(null);
   const [assets, setAssets] = useState<AssetSummary[]>([]);
   const [ctError, setCTError] = useState<string | null>(null);
+
+  // Stage 3B Resolution & Reachability State
+  const [runningResolve, setRunningResolve] = useState(false);
+  const [resolveResult, setResolveResult] = useState<DNSReachabilityResponse | null>(null);
+  const [dnsRecords, setDnsRecords] = useState<DNSRecordSummary[]>([]);
+  const [services, setServices] = useState<ServiceExposureSummary[]>([]);
+  const [resolveError, setResolveError] = useState<string | null>(null);
 
   // Probe health
   const checkHealth = useCallback(async () => {
@@ -92,14 +110,20 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load assets when selected investigation changes
+  // Load assets, DNS records, and services when selected investigation changes
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
         .then(setAssets)
         .catch(console.error);
+      listInvestigationDNSRecords(token, selectedInv.id)
+        .then(setDnsRecords)
+        .catch(console.error);
+      listInvestigationServices(token, selectedInv.id)
+        .then(setServices)
+        .catch(console.error);
     }
-  }, [token, selectedInv, ctResult]);
+  }, [token, selectedInv, ctResult, resolveResult]);
 
   // Handle Login
   const handleLogin = async (e: React.FormEvent) => {
@@ -127,7 +151,6 @@ export const App: React.FC = () => {
     setAuthError(null);
     try {
       await registerUser(authEmail, authUsername, authPassword, authFullName);
-      // Auto login after register
       const loginRes = await loginUser(authUsername, authPassword);
       setToken(loginRes.access_token);
       setCurrentUser(loginRes.user);
@@ -147,7 +170,10 @@ export const App: React.FC = () => {
     setCurrentUser(null);
     setSelectedInv(null);
     setCTResult(null);
+    setResolveResult(null);
     setAssets([]);
+    setDnsRecords([]);
+    setServices([]);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -163,6 +189,7 @@ export const App: React.FC = () => {
       setInvestigations(prev => [created, ...prev]);
       setSelectedInv(created);
       setCTResult(null);
+      setResolveResult(null);
       setInvName('');
       setInvDomain('');
       setInvOrg('');
@@ -181,13 +208,35 @@ export const App: React.FC = () => {
     try {
       const res = await runCTDiscovery(token, selectedInv.id);
       setCTResult(res);
-      // Reload assets
       const updatedAssets = await listInvestigationAssets(token, selectedInv.id);
       setAssets(updatedAssets);
     } catch (err: any) {
       setCTError(err.message || 'Certificate Transparency discovery failed');
     } finally {
       setRunningCT(false);
+    }
+  };
+
+  // Handle Run DNS & Reachability Resolution (Stage 3B)
+  const handleRunResolve = async () => {
+    if (!token || !selectedInv) return;
+    setRunningResolve(true);
+    setResolveError(null);
+    try {
+      const res = await resolveInvestigation(token, selectedInv.id);
+      setResolveResult(res);
+      const [updatedAssets, updatedDns, updatedServices] = await Promise.all([
+        listInvestigationAssets(token, selectedInv.id),
+        listInvestigationDNSRecords(token, selectedInv.id),
+        listInvestigationServices(token, selectedInv.id),
+      ]);
+      setAssets(updatedAssets);
+      setDnsRecords(updatedDns);
+      setServices(updatedServices);
+    } catch (err: any) {
+      setResolveError(err.message || 'Active DNS resolution & reachability probe failed');
+    } finally {
+      setRunningResolve(false);
     }
   };
 
@@ -215,10 +264,11 @@ export const App: React.FC = () => {
                 Attack Surface Intelligence & Risk Platform
               </h1>
               <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                Stage 3A: Investigation & Certificate Transparency Discovery
+                Stage 3B: Active DNS Intelligence & Reachability Probing
               </p>
             </div>
           </div>
+
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {currentUser && (
@@ -400,7 +450,7 @@ export const App: React.FC = () => {
             </div>
           </div>
 
-          {/* Right Column: CT Discovery & Discovered Assets */}
+          {/* Right Column: CT Discovery, Active Resolution & Discovered Assets */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
             {selectedInv ? (
               <>
@@ -416,45 +466,92 @@ export const App: React.FC = () => {
                       <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{selectedInv.title}</p>
                     </div>
 
-                    <button
-                      onClick={handleRunCT}
-                      disabled={runningCT}
-                      className="btn btn-primary"
-                      style={{ padding: '0.75rem 1.5rem' }}
-                    >
-                      <Search size={16} className={runningCT ? 'spin' : ''} style={{ animation: runningCT ? 'spin 1s linear infinite' : 'none' }} />
-                      <span>{runningCT ? 'Scanning CT Logs...' : 'Discover CT Hostnames'}</span>
-                    </button>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={handleRunCT}
+                        disabled={runningCT || runningResolve}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.65rem 1.25rem' }}
+                      >
+                        <Search size={15} className={runningCT ? 'spin' : ''} style={{ animation: runningCT ? 'spin 1s linear infinite' : 'none' }} />
+                        <span>{runningCT ? 'Scanning CT Logs...' : '1. Discover CT'}</span>
+                      </button>
+
+                      <button
+                        onClick={handleRunResolve}
+                        disabled={runningResolve || runningCT || assets.length === 0}
+                        className="btn btn-primary"
+                        style={{ padding: '0.65rem 1.25rem' }}
+                      >
+                        <Radio size={15} className={runningResolve ? 'spin' : ''} style={{ animation: runningResolve ? 'spin 1s linear infinite' : 'none' }} />
+                        <span>{runningResolve ? 'Probing DNS & HTTP...' : '2. Run DNS & Reachability'}</span>
+                      </button>
+                    </div>
                   </div>
 
                   {ctError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ctError}</div>}
+                  {resolveError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{resolveError}</div>}
                 </div>
 
-                {/* CT Discovery Notice Alert */}
-                <div className="alert alert-info">
-                  <AlertCircle size={18} />
-                  <div>
-                    <strong>Passive Discovery Notice:</strong> Hostnames extracted from Certificate Transparency logs are candidate assets. Reachability and DNS active validation will occur in Stage 3B.
+                {/* Metrics Grid (if resolution executed) */}
+                {resolveResult && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Processed</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.candidates_processed}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Resolved</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{resolveResult.resolved}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--red-400)' }}>Unresolved</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--red-400)' }}>{resolveResult.not_resolved}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>Reachable</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{resolveResult.reachable}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>DNS Records</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.dns_records_discovered}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Services</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.services_discovered}</div>
+                    </div>
                   </div>
-                </div>
+                )}
 
                 {/* Discovered Candidate Hostnames Table */}
                 <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <Layers size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Discovered Asset Candidates ({assets.length})</h3>
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Discovered Assets ({assets.length})</h3>
                     </div>
-                    {ctResult && (
-                      <span className="badge badge-neutral">
-                        Source: {ctResult.source} • {ctResult.certificate_count} certs
-                      </span>
-                    )}
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      {ctResult && (
+                        <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
+                          CT: {ctResult.certificate_count} certs
+                        </span>
+                      )}
+                      {dnsRecords.length > 0 && (
+                        <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
+                          DNS: {dnsRecords.length} records
+                        </span>
+                      )}
+                      {services.length > 0 && (
+                        <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
+                          HTTP/S: {services.length} services
+                        </span>
+                      )}
+                    </div>
                   </div>
 
                   {assets.length === 0 ? (
                     <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                      No CT discovery executed yet for this investigation. Click <strong>"Discover CT Hostnames"</strong> above to retrieve public certificate logs.
+                      No discovery executed yet for this investigation. Click <strong>"1. Discover CT"</strong> above to retrieve public certificate candidates.
                     </div>
                   ) : (
                     <div style={{ overflowX: 'auto' }}>
@@ -463,40 +560,162 @@ export const App: React.FC = () => {
                           <tr>
                             <th>Hostname / Asset</th>
                             <th>Type</th>
-                            <th>Validation Status</th>
-                            <th>Confidence</th>
+                            <th>DNS Status</th>
+                            <th>Reachability</th>
                             <th>Source</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {assets.map(asset => (
-                            <tr key={asset.id}>
-                              <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                                {asset.value}
-                              </td>
+                          {assets.map(asset => {
+                            const candidateDetail = resolveResult?.results.find(r => r.hostname === asset.value);
+                            const isResolving = asset.is_active || candidateDetail?.is_resolving;
+                            const isReachable = candidateDetail?.is_reachable;
+
+                            return (
+                              <tr key={asset.id}>
+                                <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
+                                  {asset.value}
+                                </td>
+                                <td>
+                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                    {asset.asset_type}
+                                  </span>
+                                </td>
+                                <td>
+                                  {isResolving ? (
+                                    <span className="badge badge-success" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                      <CheckCircle2 size={11} /> Resolving
+                                    </span>
+                                  ) : (
+                                    <span className="badge badge-warning" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                      <XCircle size={11} /> Unresolved Candidate
+                                    </span>
+                                  )}
+                                </td>
+                                <td>
+                                  {isReachable ? (
+                                    <span className="badge badge-info" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
+                                      <Activity size={11} /> Live HTTP/S
+                                    </span>
+                                  ) : isResolving ? (
+                                    <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                      No HTTP
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                                  )}
+                                </td>
+                                <td style={{ color: 'var(--text-secondary)' }}>
+                                  {asset.source}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+
+                {/* Discovered DNS Records Section */}
+                {dnsRecords.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                      <Radio size={18} color="var(--cyan-400)" />
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                        Active DNS Resource Records ({dnsRecords.length})
+                      </h3>
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Record Type</th>
+                            <th>Value</th>
+                            <th>TTL</th>
+                            <th>Resolver</th>
+                            <th>Collected At</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {dnsRecords.map(rec => (
+                            <tr key={rec.id}>
                               <td>
-                                <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                  {asset.asset_type}
+                                <span className="badge badge-neutral font-mono" style={{ fontSize: '0.75rem', fontWeight: 700 }}>
+                                  {rec.record_type}
                                 </span>
                               </td>
-                              <td>
-                                <span className="badge badge-warning" style={{ fontSize: '0.7rem' }}>
-                                  Candidate (Unresolved)
-                                </span>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+                                {rec.value}
                               </td>
-                              <td style={{ color: 'var(--emerald-400)', fontWeight: 500 }}>
-                                {(asset.confidence * 100).toFixed(0)}%
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+                                {rec.ttl ? `${rec.ttl}s` : '—'}
                               </td>
-                              <td style={{ color: 'var(--text-secondary)' }}>
-                                {asset.source}
+                              <td style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
+                                {rec.resolver}
+                              </td>
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {new Date(rec.collected_at).toLocaleTimeString()}
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
+
+                {/* Discovered Service Exposures Section */}
+                {services.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                      <Server size={18} color="var(--cyan-400)" />
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                        Live Service Exposures ({services.length})
+                      </h3>
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Port / Protocol</th>
+                            <th>Service</th>
+                            <th>HTTP Status</th>
+                            <th>Page Title</th>
+                            <th>Observed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {services.map(svc => (
+                            <tr key={svc.id}>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                {svc.port}/{svc.protocol}
+                              </td>
+                              <td>
+                                <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
+                                  {svc.service_name}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`badge ${svc.http_status && svc.http_status < 400 ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.75rem' }}>
+                                  {svc.http_status ?? 'N/A'}
+                                </span>
+                              </td>
+                              <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                {svc.page_title || '—'}
+                              </td>
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {new Date(svc.observed_at).toLocaleTimeString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
 
                 {/* Discovered Certificates Section (if CT discovery ran) */}
                 {ctResult && ctResult.certificates.length > 0 && (
@@ -563,3 +782,4 @@ export const App: React.FC = () => {
 };
 
 export default App;
+
