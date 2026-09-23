@@ -191,13 +191,19 @@ backend\.venv\Scripts\python.exe -m pytest tests/ -v
 
 ## 8. Current Implementation Status
 
-- [x] **Stage 0 — Project Foundation (Current Stage Completed)**
+- [x] **Stage 0 — Project Foundation (Completed)**
   - Docker Compose configuration for PostgreSQL 16.
   - FastAPI backend with Pydantic Settings, CORS, and structured logging.
   - Live PostgreSQL database health probe and `/api/health` endpoint.
   - React + TypeScript + Vite frontend communicating with backend.
   - Comprehensive `.gitignore`, `.env.example`, and test suite.
-- [ ] **Stage 1** — Architecture & Database Schema Design
+- [x] **Stage 1 — Architecture & Database Schema Design (Completed)**
+  - 18 SQLAlchemy 2.0 ORM domain models (`User`, `Target`, `Investigation`, `ScanRun`, `Asset`, `Domain`, `Subdomain`, `DNSRecord`, `ASN`, `IPAddress`, `ServiceExposure`, `Certificate`, `Technology`, `TechnologyVulnerability`, `Vulnerability`, `Finding`, `Evidence`, `AssetRelationship`, `ChangeRecord`, `TimelineEvent`).
+  - Strict separation of observed technology vs. potential CVE matches requiring verification.
+  - Cryptographic evidence integrity model with SHA-256 hash validation.
+  - Directional graph edges for the Attack Surface Correlation Graph.
+  - Alembic migration environment and initial schema migration `001_initial_schema.py`.
+  - Comprehensive model tests in `tests/test_models.py` (9/9 automated tests passing).
 - [ ] **Stage 2** — Backend Core Foundation & Authentication
 - [ ] **Stage 3** — Certificate Transparency & DNS Discovery
 - [ ] **Stage 4** — IP / ASN / RDAP Infrastructure Intelligence
