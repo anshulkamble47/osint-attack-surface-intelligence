@@ -19,26 +19,7 @@ from backend.app.core.security import (
 )
 from backend.app.api.deps import require_role
 from fastapi import Depends, APIRouter
-
-# Test database setup (in-memory SQLite with StaticPool for thread-safe TestClient operations)
-test_engine = create_engine(
-    "sqlite:///:memory:",
-    connect_args={"check_same_thread": False},
-    poolclass=StaticPool,
-)
-TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
-Base.metadata.create_all(bind=test_engine)
-
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-app.dependency_overrides[get_db] = override_get_db
+from tests.conftest import TestingSessionLocal
 
 # Role-protected test routes attached for verifying require_role dependency
 test_role_router = APIRouter(prefix="/api/test-rbac", tags=["Testing RBAC"])

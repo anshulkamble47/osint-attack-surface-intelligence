@@ -7,6 +7,14 @@ from backend.app.schemas.auth import (
     UserResponse,
     TokenResponse,
 )
+from backend.app.schemas.investigation import (
+    InvestigationCreateRequest,
+    InvestigationResponse,
+    TargetResponse,
+    CertificateSummaryResponse,
+    CTDiscoveryResponse,
+    AssetSummaryResponse,
+)
 
 __all__ = [
     "UserRole",
@@ -14,4 +22,10 @@ __all__ = [
     "UserLoginRequest",
     "UserResponse",
     "TokenResponse",
+    "InvestigationCreateRequest",
+    "InvestigationResponse",
+    "TargetResponse",
+    "CertificateSummaryResponse",
+    "CTDiscoveryResponse",
+    "AssetSummaryResponse",
 ]
