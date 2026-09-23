@@ -204,7 +204,12 @@ backend\.venv\Scripts\python.exe -m pytest tests/ -v
   - Directional graph edges for the Attack Surface Correlation Graph.
   - Alembic migration environment and initial schema migration `001_initial_schema.py`.
   - Comprehensive model tests in `tests/test_models.py` (9/9 automated tests passing).
-- [ ] **Stage 2** — Backend Core Foundation & Authentication
+- [x] **Stage 2 — Backend Core Foundation & Authentication (Completed)**
+  - Secure salted password hashing using Bcrypt (cost factor 12).
+  - JWT token management (HMAC-SHA256) with configurable expiration.
+  - Authentication endpoints: `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`.
+  - Reusable role-based access control dependencies (`require_role("admin")`, `require_role("analyst")`, `require_role("auditor")`).
+  - Comprehensive authentication test suite in `tests/test_auth.py` (20/20 automated tests passing).
 - [ ] **Stage 3** — Certificate Transparency & DNS Discovery
 - [ ] **Stage 4** — IP / ASN / RDAP Infrastructure Intelligence
 - [ ] **Stage 5** — Technology Fingerprinting & HTTP Security Analysis

@@ -1,7 +1,7 @@
 """Application configuration using Pydantic Settings."""
 
 from typing import List, Union
-from pydantic import AnyHttpUrl, field_validator
+from pydantic import AnyHttpUrl, field_validator, ValidationInfo
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -46,10 +46,21 @@ class Settings(BaseSettings):
     POSTGRES_PORT: int = 5432
     DATABASE_URL: str = "postgresql+psycopg://postgres:postgres@localhost:5432/osint_platform"
 
-    # Security (Prepared for future stages)
+    # Security & Authentication
     JWT_SECRET: str = "development_jwt_secret_replace_in_production_environment_random_key_64chars"
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 1440
+
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def validate_jwt_secret(cls, v: str, info: ValidationInfo) -> str:
+        env = info.data.get("ENVIRONMENT", "development")
+        if env == "production":
+            if not v or "replace_in_production" in v or len(v) < 32:
+                raise ValueError(
+                    "In production environment, JWT_SECRET must be explicitly set to a cryptographically strong secret via environment configuration."
+                )
+        return v
 
     # External APIs (Prepared for future stages)
     GROQ_API_KEY: str = ""

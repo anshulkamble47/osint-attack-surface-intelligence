@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
 from backend.app.core.logging import logger
 from backend.app.api.health import router as health_router
+from backend.app.api.auth import router as auth_router
 from backend.app.database.connection import check_database_connection
 
 
@@ -59,6 +60,7 @@ app.add_middleware(
 
 # Register API Routers
 app.include_router(health_router, prefix=settings.API_V1_PREFIX)
+app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/", tags=["Root"])
@@ -68,7 +70,12 @@ def root_endpoint():
         "platform": settings.PROJECT_NAME,
         "version": settings.VERSION,
         "status": "online",
-        "stage": "Stage 0 - Project Foundation",
+        "stage": "Stage 2 - Backend Core Foundation & Authentication",
         "documentation": "/api/docs",
         "health_endpoint": f"{settings.API_V1_PREFIX}/health",
+        "auth_endpoints": {
+            "register": f"{settings.API_V1_PREFIX}/auth/register",
+            "login": f"{settings.API_V1_PREFIX}/auth/login",
+            "me": f"{settings.API_V1_PREFIX}/auth/me",
+        },
     }
