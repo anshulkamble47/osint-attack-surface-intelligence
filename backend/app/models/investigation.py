@@ -194,6 +194,12 @@ class ScanRun(Base):
         back_populates="scan_run",
         cascade="all, delete-orphan",
     )
+    findings = relationship(
+        "Finding",
+        foreign_keys="Finding.scan_run_id",
+        back_populates="scan_run",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<ScanRun run={self.run_number} status={self.status}>"

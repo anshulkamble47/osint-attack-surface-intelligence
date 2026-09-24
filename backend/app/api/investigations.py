@@ -44,6 +44,12 @@ from backend.app.schemas.investigation import (
     CorrelateVulnerabilitiesResponse,
 )
 from backend.app.schemas.graph import GraphResponse
+from backend.app.schemas.finding import (
+    FindingResponse,
+    FindingStatusUpdateRequest,
+    GenerateFindingsResponse,
+    FindingListResponse,
+)
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
 from backend.app.services.reachability_service import ReachabilityService
@@ -54,6 +60,7 @@ from backend.app.services.http_service import HTTPIntelligenceService
 from backend.app.services.technology_service import TechnologyService
 from backend.app.services.vulnerability_service import VulnerabilityService
 from backend.app.services.correlation_service import CorrelationService
+from backend.app.services.finding_service import FindingService
 
 
 
@@ -105,6 +112,11 @@ def get_vulnerability_service() -> VulnerabilityService:
 def get_correlation_service() -> CorrelationService:
     """Dependency provider returning CorrelationService instance."""
     return CorrelationService()
+
+
+def get_finding_service() -> FindingService:
+    """Dependency provider returning FindingService instance."""
+    return FindingService()
 
 
 router = APIRouter(prefix="/investigations", tags=["Investigations & OSINT Discovery"])
@@ -2128,6 +2140,180 @@ def get_investigation_graph(
             scan_run_id=scan_run_id,
             node_types=node_type,
             relationship_types=relationship_type,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.post(
+    "/{investigation_id}/findings/generate",
+    response_model=GenerateFindingsResponse,
+    summary="Generate Security Findings & Risk Assessment",
+    description="Deterministically correlates Stage 3-7 intelligence into evidence-backed findings and contextual risk assessments.",
+)
+def generate_investigation_findings(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    finding_service: FindingService = Depends(get_finding_service),
+) -> GenerateFindingsResponse:
+    """Generate explicit security findings and contextual risk scores for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    if scan_run_id:
+        scan_run = db.get(ScanRun, scan_run_id)
+        if not scan_run:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scan run not found",
+            )
+        if scan_run.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scan run does not belong to this investigation",
+            )
+
+    try:
+        return finding_service.generate_investigation_findings(
+            db=db,
+            investigation_id=investigation_id,
+            scan_run_id=scan_run_id,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{investigation_id}/findings",
+    response_model=FindingListResponse,
+    summary="List Investigation Security Findings",
+    description="Retrieves security findings and contextual risk scores with optional filtering.",
+)
+def list_investigation_findings(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    severity: Optional[str] = None,
+    status_filter: Optional[str] = Query(None, alias="status"),
+    finding_type: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    finding_service: FindingService = Depends(get_finding_service),
+) -> FindingListResponse:
+    """List and filter security findings for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    if scan_run_id:
+        scan_run = db.get(ScanRun, scan_run_id)
+        if not scan_run:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scan run not found",
+            )
+        if scan_run.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scan run does not belong to this investigation",
+            )
+
+    return finding_service.list_investigation_findings(
+        db=db,
+        investigation_id=investigation_id,
+        scan_run_id=scan_run_id,
+        severity=severity,
+        status=status_filter,
+        finding_type=finding_type,
+        category=category,
+    )
+
+
+@router.get(
+    "/{investigation_id}/findings/{finding_id}",
+    response_model=FindingResponse,
+    summary="Get Finding Detail & Risk Factors",
+    description="Retrieves granular finding details, contextual risk factor breakdown, and cryptographic evidence references.",
+)
+def get_investigation_finding_detail(
+    investigation_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    finding_service: FindingService = Depends(get_finding_service),
+) -> FindingResponse:
+    """Get single finding detail, strictly verifying investigation ownership to prevent IDOR."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    try:
+        return finding_service.get_finding_detail(
+            db=db,
+            investigation_id=investigation_id,
+            finding_id=finding_id,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e),
+        )
+
+
+@router.patch(
+    "/{investigation_id}/findings/{finding_id}",
+    response_model=FindingResponse,
+    summary="Update Finding Status",
+    description="Updates finding lifecycle state (open, acknowledged, resolved, suppressed).",
+)
+def update_investigation_finding_status(
+    investigation_id: uuid.UUID,
+    finding_id: uuid.UUID,
+    payload: FindingStatusUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    finding_service: FindingService = Depends(get_finding_service),
+) -> FindingResponse:
+    """Update finding status."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    try:
+        return finding_service.update_finding_status(
+            db=db,
+            investigation_id=investigation_id,
+            finding_id=finding_id,
+            new_status=payload.status,
         )
     except ValueError as e:
         raise HTTPException(

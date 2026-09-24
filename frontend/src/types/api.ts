@@ -364,6 +364,96 @@ export interface GraphResponse {
   statistics: GraphStatistics;
 }
 
+export interface FindingAssetSummary {
+  id: string;
+  asset_type: string;
+  value: string;
+}
+
+export interface FindingTechnologySummary {
+  id: string;
+  name: string;
+  version?: string | null;
+  cpe?: string | null;
+  category: string;
+  confidence: number;
+}
+
+export interface FindingVulnerabilitySummary {
+  id: string;
+  cve_id: string;
+  title?: string | null;
+  severity: string;
+  cvss_v3_score?: number | null;
+  cvss_vector?: string | null;
+  source: string;
+}
+
+export interface FindingEvidenceSummary {
+  id: string;
+  reference_code: string;
+  evidence_type: string;
+  source: string;
+  sha256_hash: string;
+  collected_at: string;
+}
+
+export interface FindingResponse {
+  id: string;
+  reference_code: string;
+  investigation_id: string;
+  scan_run_id?: string | null;
+  asset_id: string;
+  technology_id?: string | null;
+  vulnerability_id?: string | null;
+  title: string;
+  description: string;
+  category: string;
+  finding_type: string;
+  severity: string;
+  status: string;
+  context_score: number;
+  risk_score: number;
+  risk_category: string;
+  cvss_score?: number | null;
+  is_kev: boolean;
+  score_breakdown: Record<string, any>;
+  risk_factors: Record<string, any>;
+  remediation?: string | null;
+  recommendation: string;
+  is_verified: boolean;
+  asset?: FindingAssetSummary | null;
+  technology?: FindingTechnologySummary | null;
+  vulnerability?: FindingVulnerabilitySummary | null;
+  evidence_items: FindingEvidenceSummary[];
+  created_at: string;
+  updated_at?: string | null;
+}
+
+export interface GenerateFindingsResponse {
+  investigation_id: string;
+  scan_run_id?: string | null;
+  scan_run_number?: number | null;
+  findings_generated: number;
+  findings_updated: number;
+  findings_total: number;
+  severity_breakdown: Record<string, number>;
+  risk_category_breakdown: Record<string, number>;
+  findings: FindingResponse[];
+  completed_at: string;
+  note: string;
+}
+
+export interface FindingListResponse {
+  investigation_id: string;
+  scan_run_id?: string | null;
+  total: number;
+  severity_breakdown: Record<string, number>;
+  risk_category_breakdown: Record<string, number>;
+  findings: FindingResponse[];
+}
+
+
 
 
 

@@ -22,6 +22,8 @@ import {
   GitFork,
   Eye,
   Filter,
+  ShieldAlert,
+  Zap,
 } from 'lucide-react';
 
 import { 
@@ -45,6 +47,9 @@ import {
   correlateInvestigationVulnerabilities,
   listInvestigationVulnerabilities,
   getInvestigationGraph,
+  generateInvestigationFindings,
+  listInvestigationFindings,
+  updateInvestigationFindingStatus,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -66,7 +71,10 @@ import {
   VulnerabilityCorrelationDetail,
   GraphResponse,
   GraphNode,
+  FindingResponse,
 } from './types/api';
+
+
 
 
 
@@ -140,6 +148,16 @@ export const App: React.FC = () => {
   const [filterNodeType, setFilterNodeType] = useState<string>('ALL');
   const [filterRelType, setFilterRelType] = useState<string>('ALL');
 
+  // Stage 8 Findings, Risk & Evidence Intelligence State
+  const [runningFindings, setRunningFindings] = useState(false);
+  const [findingsList, setFindingsList] = useState<FindingResponse[]>([]);
+  const [selectedFinding, setSelectedFinding] = useState<FindingResponse | null>(null);
+  const [findingError, setFindingError] = useState<string | null>(null);
+
+  const [filterFindingSeverity, setFilterFindingSeverity] = useState<string>('ALL');
+  const [filterFindingStatus, setFilterFindingStatus] = useState<string>('ALL');
+  const [filterFindingType, setFilterFindingType] = useState<string>('ALL');
+
   // Probe health
   const checkHealth = useCallback(async () => {
     try {
@@ -198,7 +216,61 @@ export const App: React.FC = () => {
     }
   }, [token, selectedInv, filterNodeType, filterRelType]);
 
-  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, vulnerabilities, and graph
+  // Handle Load Findings
+  const handleLoadFindings = useCallback(async () => {
+    if (!token || !selectedInv) return;
+    setFindingError(null);
+    try {
+      const sev = filterFindingSeverity !== 'ALL' ? filterFindingSeverity : undefined;
+      const st = filterFindingStatus !== 'ALL' ? filterFindingStatus : undefined;
+      const ft = filterFindingType !== 'ALL' ? filterFindingType : undefined;
+      const res = await listInvestigationFindings(token, selectedInv.id, undefined, sev, st, ft);
+      setFindingsList(res.findings);
+      if (res.findings.length > 0) {
+        setSelectedFinding(prev => {
+          if (prev && res.findings.some(f => f.id === prev.id)) {
+            return res.findings.find(f => f.id === prev.id) || res.findings[0];
+          }
+          return res.findings[0];
+        });
+      }
+    } catch (err: any) {
+      console.error('Failed to load findings:', err);
+      setFindingError(err.message || 'Failed to load findings');
+    }
+  }, [token, selectedInv, filterFindingSeverity, filterFindingStatus, filterFindingType]);
+
+  // Handle Generate Findings
+  const handleGenerateFindings = async () => {
+    if (!token || !selectedInv) return;
+    setRunningFindings(true);
+    setFindingError(null);
+    try {
+      const res = await generateInvestigationFindings(token, selectedInv.id);
+      setFindingsList(res.findings);
+      if (res.findings.length > 0) {
+        setSelectedFinding(res.findings[0]);
+      }
+    } catch (err: any) {
+      setFindingError(err.message || 'Failed to generate findings');
+    } finally {
+      setRunningFindings(false);
+    }
+  };
+
+  // Handle Update Finding Status
+  const handleUpdateFindingStatus = async (findingId: string, newStatus: string) => {
+    if (!token || !selectedInv) return;
+    try {
+      const updated = await updateInvestigationFindingStatus(token, selectedInv.id, findingId, newStatus);
+      setSelectedFinding(updated);
+      setFindingsList(prev => prev.map(f => f.id === updated.id ? updated : f));
+    } catch (err: any) {
+      setFindingError(err.message || 'Failed to update finding status');
+    }
+  };
+
+  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, vulnerabilities, graph, and findings
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
@@ -229,8 +301,10 @@ export const App: React.FC = () => {
         .then(setVulnerabilities)
         .catch(console.error);
       handleLoadGraph();
+      handleLoadFindings();
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph, handleLoadFindings]);
+
 
 
 
@@ -1754,6 +1828,388 @@ export const App: React.FC = () => {
                           )}
                         </div>
                       </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* 7. Findings & Contextual Risk Assessment Section */}
+                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid var(--rose-500)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ background: 'rgba(244, 63, 94, 0.15)', padding: '0.6rem', borderRadius: '10px', color: 'var(--rose-400)' }}>
+                        <ShieldAlert size={22} />
+                      </div>
+                      <div>
+                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          7. Findings & Contextual Risk Assessment
+                        </h2>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          Evidence-backed security findings with transparent, explainable contextual risk scoring (0-100)
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Filter size={14} color="var(--text-muted)" />
+                        <select
+                          className="input"
+                          value={filterFindingSeverity}
+                          onChange={e => setFilterFindingSeverity(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Severities</option>
+                          <option value="CRITICAL">Critical</option>
+                          <option value="HIGH">High</option>
+                          <option value="MEDIUM">Medium</option>
+                          <option value="LOW">Low</option>
+                          <option value="INFO">Informational</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <select
+                          className="input"
+                          value={filterFindingType}
+                          onChange={e => setFilterFindingType(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Finding Types</option>
+                          <option value="VULNERABILITY">Vulnerability</option>
+                          <option value="SECURITY_HEADER">Security Header</option>
+                          <option value="TLS_SECURITY">TLS Security</option>
+                          <option value="SERVICE_EXPOSURE">Service Exposure</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <select
+                          className="input"
+                          value={filterFindingStatus}
+                          onChange={e => setFilterFindingStatus(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Statuses</option>
+                          <option value="open">Open</option>
+                          <option value="acknowledged">Acknowledged</option>
+                          <option value="resolved">Resolved</option>
+                          <option value="suppressed">Suppressed</option>
+                        </select>
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleGenerateFindings}
+                        disabled={runningFindings || !selectedInv}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #e11d48, #f43f5e)' }}
+                      >
+                        <Zap size={16} className={runningFindings ? 'animate-spin' : ''} />
+                        {runningFindings ? 'Analyzing Risk...' : 'Generate Findings & Risk'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {findingError && (
+                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <XCircle size={16} />
+                      <span>{findingError}</span>
+                    </div>
+                  )}
+
+                  {/* Summary Metric Strip */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Findings</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+                        {findingsList.length}
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)' }}>Critical Severity</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.2rem' }}>
+                        {findingsList.filter(f => f.severity === 'CRITICAL').length}
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(249, 115, 22, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#fb923c' }}>High Severity</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#fb923c', marginTop: '0.2rem' }}>
+                        {findingsList.filter(f => f.severity === 'HIGH').length}
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(234, 179, 8, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: '#facc15' }}>Medium / Low</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#facc15', marginTop: '0.2rem' }}>
+                        {findingsList.filter(f => f.severity === 'MEDIUM' || f.severity === 'LOW').length}
+                      </div>
+                    </div>
+
+                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>CISA KEV Listed</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#f43f5e', marginTop: '0.2rem' }}>
+                        {findingsList.filter(f => f.is_kev).length}
+                      </div>
+                    </div>
+                  </div>
+
+                  {findingsList.length > 0 ? (
+                    /* Findings Split Explorer & Inspector */
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1rem', alignItems: 'start' }}>
+                      {/* Left: Findings List */}
+                      <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                          <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Correlated Security Findings ({findingsList.length})
+                          </h4>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click finding to inspect risk factors</span>
+                        </div>
+
+                        <div style={{ maxHeight: '420px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {findingsList.map(finding => {
+                            const isSelected = selectedFinding?.id === finding.id;
+                            const sevColor = 
+                              finding.severity === 'CRITICAL' ? 'var(--rose-400)' :
+                              finding.severity === 'HIGH' ? '#fb923c' :
+                              finding.severity === 'MEDIUM' ? '#facc15' :
+                              finding.severity === 'LOW' ? 'var(--cyan-400)' :
+                              'var(--text-muted)';
+
+                            const riskCatBg =
+                              finding.risk_category === 'CRITICAL' ? 'rgba(244, 63, 94, 0.2)' :
+                              finding.risk_category === 'HIGH' ? 'rgba(251, 146, 60, 0.2)' :
+                              finding.risk_category === 'MEDIUM' ? 'rgba(250, 204, 21, 0.2)' :
+                              'rgba(56, 189, 248, 0.2)';
+
+                            const riskCatColor =
+                              finding.risk_category === 'CRITICAL' ? '#f43f5e' :
+                              finding.risk_category === 'HIGH' ? '#fb923c' :
+                              finding.risk_category === 'MEDIUM' ? '#facc15' :
+                              '#38bdf8';
+
+                            return (
+                              <div
+                                key={finding.id}
+                                onClick={() => setSelectedFinding(finding)}
+                                style={{
+                                  padding: '0.75rem',
+                                  borderRadius: '8px',
+                                  background: isSelected ? 'rgba(244, 63, 94, 0.12)' : 'rgba(30, 41, 59, 0.45)',
+                                  border: isSelected ? '1px solid var(--rose-500)' : '1px solid var(--border-subtle)',
+                                  cursor: 'pointer',
+                                  transition: 'all 0.15s ease',
+                                  display: 'flex',
+                                  flexDirection: 'column',
+                                  gap: '0.4rem',
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
+                                    <span
+                                      className="badge"
+                                      style={{
+                                        fontSize: '0.65rem',
+                                        background: 'rgba(0,0,0,0.3)',
+                                        color: sevColor,
+                                        border: `1px solid ${sevColor}`,
+                                        padding: '0.1rem 0.4rem',
+                                        fontWeight: 600,
+                                      }}
+                                    >
+                                      {finding.severity}
+                                    </span>
+                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                      {finding.reference_code}
+                                    </span>
+                                  </div>
+
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                    {finding.is_kev && (
+                                      <span
+                                        className="badge"
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          background: 'rgba(244, 63, 94, 0.25)',
+                                          color: '#f43f5e',
+                                          border: '1px solid #f43f5e',
+                                          padding: '0.1rem 0.35rem',
+                                          fontWeight: 700,
+                                        }}
+                                      >
+                                        CISA KEV
+                                      </span>
+                                    )}
+                                    <span
+                                      className="badge"
+                                      style={{
+                                        fontSize: '0.7rem',
+                                        background: riskCatBg,
+                                        color: riskCatColor,
+                                        border: `1px solid ${riskCatColor}`,
+                                        fontWeight: 700,
+                                      }}
+                                    >
+                                      Risk {finding.context_score}/100
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {finding.title}
+                                </div>
+
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  <span>{finding.asset?.value || 'Asset'}</span>
+                                  <span style={{ textTransform: 'capitalize' }}>Status: {finding.status}</span>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Right: Selected Finding Inspector */}
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <ShieldAlert size={18} color="var(--rose-400)" />
+                            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                              Finding Inspector & Risk Model
+                            </h4>
+                          </div>
+
+                          {selectedFinding && (
+                            <select
+                              className="input"
+                              value={selectedFinding.status}
+                              onChange={e => handleUpdateFindingStatus(selectedFinding.id, e.target.value)}
+                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', width: 'auto' }}
+                            >
+                              <option value="open">Status: Open</option>
+                              <option value="acknowledged">Status: Acknowledged</option>
+                              <option value="resolved">Status: Resolved</option>
+                              <option value="suppressed">Status: Suppressed</option>
+                            </select>
+                          )}
+                        </div>
+
+                        {selectedFinding ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                  {selectedFinding.reference_code}
+                                </span>
+                                <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                  {selectedFinding.finding_type}
+                                </span>
+                              </div>
+                              <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                {selectedFinding.title}
+                              </h3>
+                            </div>
+
+                            {/* Risk Score vs CVSS Strip */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                              <div style={{ background: 'rgba(244, 63, 94, 0.1)', border: '1px solid rgba(244, 63, 94, 0.3)', borderRadius: '6px', padding: '0.65rem' }}>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--rose-400)', fontWeight: 600 }}>PLATFORM CONTEXTUAL RISK</div>
+                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.15rem' }}>
+                                  {selectedFinding.context_score} / 100
+                                </div>
+                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                                  Level: {selectedFinding.risk_category}
+                                </div>
+                              </div>
+
+                              <div style={{ background: 'rgba(15, 23, 42, 0.7)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '0.65rem' }}>
+                                <div style={{ fontSize: '0.7rem', color: 'var(--cyan-400)', fontWeight: 600 }}>NVD CVSS BASE SCORE</div>
+                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--cyan-400)', marginTop: '0.15rem' }}>
+                                  {selectedFinding.cvss_score !== null && selectedFinding.cvss_score !== undefined ? `${selectedFinding.cvss_score} / 10.0` : 'N/A'}
+                                </div>
+                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
+                                  Severity: {selectedFinding.severity}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Transparent Risk Factors Table */}
+                            {selectedFinding.risk_factors && (
+                              <div style={{ background: 'rgba(0, 0, 0, 0.35)', borderRadius: '6px', padding: '0.75rem', border: '1px solid var(--border-subtle)' }}>
+                                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.4rem' }}>
+                                  Contextual Risk Scoring Breakdown:
+                                </div>
+                                <table className="table" style={{ fontSize: '0.75rem' }}>
+                                  <tbody>
+                                    <tr>
+                                      <td style={{ color: 'var(--text-muted)' }}>Base Factor:</td>
+                                      <td style={{ color: 'var(--text-primary)' }}>{selectedFinding.risk_factors.base_factor}</td>
+                                    </tr>
+                                    {selectedFinding.risk_factors.cisa_kev_adjustment > 0 && (
+                                      <tr>
+                                        <td style={{ color: 'var(--rose-400)' }}>CISA KEV Adjustment:</td>
+                                        <td style={{ color: 'var(--rose-400)' }}>+{selectedFinding.risk_factors.cisa_kev_adjustment} pts ({selectedFinding.risk_factors.cisa_kev_reason})</td>
+                                      </tr>
+                                    )}
+                                    {selectedFinding.risk_factors.exposure_adjustment > 0 && (
+                                      <tr>
+                                        <td style={{ color: '#fb923c' }}>Exposure Adjustment:</td>
+                                        <td style={{ color: '#fb923c' }}>+{selectedFinding.risk_factors.exposure_adjustment} pts ({selectedFinding.risk_factors.exposure_reason})</td>
+                                      </tr>
+                                    )}
+                                    {selectedFinding.risk_factors.confidence_adjustment !== 0 && (
+                                      <tr>
+                                        <td style={{ color: 'var(--cyan-400)' }}>Confidence Factor:</td>
+                                        <td style={{ color: 'var(--cyan-400)' }}>{selectedFinding.risk_factors.confidence_adjustment > 0 ? `+${selectedFinding.risk_factors.confidence_adjustment}` : selectedFinding.risk_factors.confidence_adjustment} pts ({selectedFinding.risk_factors.confidence_reason})</td>
+                                      </tr>
+                                    )}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+
+                            {/* Description */}
+                            <div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Description</div>
+                              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                                {selectedFinding.description}
+                              </p>
+                            </div>
+
+                            {/* Remediation */}
+                            <div style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '0.75rem' }}>
+                              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--emerald-400)', marginBottom: '0.2rem' }}>
+                                Recommended Remediation
+                              </div>
+                              <p style={{ fontSize: '0.8rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                                {selectedFinding.remediation || selectedFinding.recommendation}
+                              </p>
+                            </div>
+
+                            {/* Affected Component Details */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.75rem' }}>
+                              <div>
+                                <span style={{ color: 'var(--text-muted)' }}>Target Asset: </span>
+                                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{selectedFinding.asset?.value || 'N/A'}</span>
+                              </div>
+                              {selectedFinding.technology && (
+                                <div>
+                                  <span style={{ color: 'var(--text-muted)' }}>Technology: </span>
+                                  <span style={{ color: '#a78bfa' }}>{selectedFinding.technology.name} {selectedFinding.technology.version || ''}</span>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2.5rem 0' }}>
+                            Select a finding from the list to view its risk factor breakdown and remediation.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      No security findings generated yet for this investigation. Click <strong>Generate Findings & Risk</strong> to run correlation.
                     </div>
                   )}
                 </div>

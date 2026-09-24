@@ -40,6 +40,17 @@ from backend.app.schemas.graph import (
     GraphStatistics,
     GraphResponse,
 )
+from backend.app.schemas.finding import (
+    FindingAssetSummary,
+    FindingTechnologySummary,
+    FindingVulnerabilitySummary,
+    FindingEvidenceSummary,
+    RiskFactorDetail,
+    FindingResponse,
+    FindingStatusUpdateRequest,
+    GenerateFindingsResponse,
+    FindingListResponse,
+)
 
 __all__ = [
     "UserRole",
@@ -76,6 +87,16 @@ __all__ = [
     "GraphEdge",
     "GraphStatistics",
     "GraphResponse",
+    "FindingAssetSummary",
+    "FindingTechnologySummary",
+    "FindingVulnerabilitySummary",
+    "FindingEvidenceSummary",
+    "RiskFactorDetail",
+    "FindingResponse",
+    "FindingStatusUpdateRequest",
+    "GenerateFindingsResponse",
+    "FindingListResponse",
 ]
+
 
 

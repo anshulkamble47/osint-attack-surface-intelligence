@@ -18,6 +18,9 @@ import {
   CorrelateVulnerabilitiesResponse,
   VulnerabilityCorrelationDetail,
   GraphResponse,
+  FindingResponse,
+  GenerateFindingsResponse,
+  FindingListResponse,
 } from '../types/api';
 
 
@@ -270,6 +273,63 @@ export async function getInvestigationGraph(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function generateInvestigationFindings(
+  token: string,
+  investigationId: string,
+  scanRunId?: string
+): Promise<GenerateFindingsResponse> {
+  const qs = scanRunId ? `?scan_run_id=${scanRunId}` : '';
+  return request<GenerateFindingsResponse>(`/investigations/${investigationId}/findings/generate${qs}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationFindings(
+  token: string,
+  investigationId: string,
+  scanRunId?: string,
+  severity?: string,
+  status?: string,
+  findingType?: string,
+  category?: string
+): Promise<FindingListResponse> {
+  const params = new URLSearchParams();
+  if (scanRunId) params.append('scan_run_id', scanRunId);
+  if (severity) params.append('severity', severity);
+  if (status) params.append('status', status);
+  if (findingType) params.append('finding_type', findingType);
+  if (category) params.append('category', category);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return request<FindingListResponse>(`/investigations/${investigationId}/findings${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function getInvestigationFindingDetail(
+  token: string,
+  investigationId: string,
+  findingId: string
+): Promise<FindingResponse> {
+  return request<FindingResponse>(`/investigations/${investigationId}/findings/${findingId}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function updateInvestigationFindingStatus(
+  token: string,
+  investigationId: string,
+  findingId: string,
+  status: string
+): Promise<FindingResponse> {
+  return request<FindingResponse>(`/investigations/${investigationId}/findings/${findingId}`, {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ status }),
+  });
+}
+
 
 
 

@@ -63,6 +63,9 @@ from backend.app.services.vulnerability_service import (
 from backend.app.services.correlation_service import (
     CorrelationService,
 )
+from backend.app.services.finding_service import (
+    FindingService,
+)
 
 __all__ = [
     "CTService",
@@ -103,7 +106,9 @@ __all__ = [
     "CorrelationStatus",
     "CorrelatedVulnerability",
     "CorrelationService",
+    "FindingService",
 ]
+
 
 
 
