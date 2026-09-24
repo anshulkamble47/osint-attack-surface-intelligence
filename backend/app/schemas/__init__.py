@@ -18,6 +18,12 @@ from backend.app.schemas.investigation import (
     ServiceExposureSummaryResponse,
     CandidateResolutionDetail,
     DNSReachabilityResponse,
+    ASNSummaryResponse,
+    RDAPSummaryResponse,
+    IPAddressSummaryResponse,
+    IPObservationSummaryResponse,
+    IPEnrichmentDetail,
+    IPEnrichmentResponse,
 )
 
 __all__ = [
@@ -36,5 +42,11 @@ __all__ = [
     "ServiceExposureSummaryResponse",
     "CandidateResolutionDetail",
     "DNSReachabilityResponse",
+    "ASNSummaryResponse",
+    "RDAPSummaryResponse",
+    "IPAddressSummaryResponse",
+    "IPObservationSummaryResponse",
+    "IPEnrichmentDetail",
+    "IPEnrichmentResponse",
 ]
 

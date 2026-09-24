@@ -183,6 +183,11 @@ class ScanRun(Base):
         back_populates="scan_run",
         cascade="all, delete-orphan",
     )
+    ip_observations = relationship(
+        "IPObservation",
+        back_populates="scan_run",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<ScanRun run={self.run_number} status={self.status}>"

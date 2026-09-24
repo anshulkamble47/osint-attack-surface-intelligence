@@ -279,6 +279,7 @@ class ASN(Base):
 
     # Relationships
     ip_addresses = relationship("IPAddress", back_populates="asn")
+    ip_observations = relationship("IPObservation", back_populates="asn")
 
     def __repr__(self) -> str:
         return f"<ASN AS{self.asn_number} name={self.name}>"
@@ -317,9 +318,60 @@ class IPAddress(Base):
     # Relationships
     asset = relationship("Asset", back_populates="ip_address")
     asn = relationship("ASN", back_populates="ip_addresses")
+    observations = relationship(
+        "IPObservation", back_populates="ip_address", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<IPAddress ip={self.ip_address} asn={self.asn_id}>"
+
+
+class IPObservation(Base):
+    """
+    Point-in-time observation linking a ScanRun to an IPAddress and its observed ASN.
+    Preserves historical routing and ownership records across scans.
+    """
+
+    __tablename__ = "ip_observations"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    scan_run_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("scan_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ip_address_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("ip_addresses.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    asn_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("asns.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    observed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("scan_run_id", "ip_address_id", name="uq_ip_observations_scan_run_ip"),
+    )
+
+    # Relationships
+    scan_run = relationship("ScanRun", back_populates="ip_observations")
+    ip_address = relationship("IPAddress", back_populates="observations")
+    asn = relationship("ASN", back_populates="ip_observations")
+
+    def __repr__(self) -> str:
+        return f"<IPObservation scan_run={self.scan_run_id} ip={self.ip_address_id} asn={self.asn_id}>"
 
 
 class ServiceExposure(Base):

@@ -12,6 +12,7 @@ import {
   CheckCircle2,
   XCircle,
   Server,
+  Network,
 } from 'lucide-react';
 
 import { 
@@ -25,6 +26,9 @@ import {
   resolveInvestigation,
   listInvestigationDNSRecords,
   listInvestigationServices,
+  enrichInvestigationIPs,
+  listInvestigationIPAddresses,
+  listInvestigationASNs,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -35,6 +39,9 @@ import {
   DNSReachabilityResponse,
   DNSRecordSummary,
   ServiceExposureSummary,
+  IPEnrichmentResponse,
+  IPAddressSummary,
+  ASNSummary,
 } from './types/api';
 
 export const App: React.FC = () => {
@@ -77,6 +84,13 @@ export const App: React.FC = () => {
   const [services, setServices] = useState<ServiceExposureSummary[]>([]);
   const [resolveError, setResolveError] = useState<string | null>(null);
 
+  // Stage 4 IP / ASN / RDAP State
+  const [runningIPEnrich, setRunningIPEnrich] = useState(false);
+  const [ipEnrichResult, setIPEnrichResult] = useState<IPEnrichmentResponse | null>(null);
+  const [ipAddresses, setIPAddresses] = useState<IPAddressSummary[]>([]);
+  const [asns, setASNs] = useState<ASNSummary[]>([]);
+  const [ipEnrichError, setIPEnrichError] = useState<string | null>(null);
+
   // Probe health
   const checkHealth = useCallback(async () => {
     try {
@@ -110,7 +124,7 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load assets, DNS records, and services when selected investigation changes
+  // Load assets, DNS records, services, IP addresses, and ASNs when selected investigation changes
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
@@ -122,8 +136,14 @@ export const App: React.FC = () => {
       listInvestigationServices(token, selectedInv.id)
         .then(setServices)
         .catch(console.error);
+      listInvestigationIPAddresses(token, selectedInv.id)
+        .then(setIPAddresses)
+        .catch(console.error);
+      listInvestigationASNs(token, selectedInv.id)
+        .then(setASNs)
+        .catch(console.error);
     }
-  }, [token, selectedInv, ctResult, resolveResult]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult]);
 
   // Handle Login
   const handleLogin = async (e: React.FormEvent) => {
@@ -171,9 +191,12 @@ export const App: React.FC = () => {
     setSelectedInv(null);
     setCTResult(null);
     setResolveResult(null);
+    setIPEnrichResult(null);
     setAssets([]);
     setDnsRecords([]);
     setServices([]);
+    setIPAddresses([]);
+    setASNs([]);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -190,6 +213,9 @@ export const App: React.FC = () => {
       setSelectedInv(created);
       setCTResult(null);
       setResolveResult(null);
+      setIPEnrichResult(null);
+      setIPAddresses([]);
+      setASNs([]);
       setInvName('');
       setInvDomain('');
       setInvOrg('');
@@ -237,6 +263,29 @@ export const App: React.FC = () => {
       setResolveError(err.message || 'Active DNS resolution & reachability probe failed');
     } finally {
       setRunningResolve(false);
+    }
+  };
+
+  // Handle Run IP & ASN Intelligence Enrichment (Stage 4)
+  const handleRunIPEnrich = async () => {
+    if (!token || !selectedInv) return;
+    setRunningIPEnrich(true);
+    setIPEnrichError(null);
+    try {
+      const res = await enrichInvestigationIPs(token, selectedInv.id);
+      setIPEnrichResult(res);
+      const [updatedAssets, updatedIPs, updatedASNs] = await Promise.all([
+        listInvestigationAssets(token, selectedInv.id),
+        listInvestigationIPAddresses(token, selectedInv.id),
+        listInvestigationASNs(token, selectedInv.id),
+      ]);
+      setAssets(updatedAssets);
+      setIPAddresses(updatedIPs);
+      setASNs(updatedASNs);
+    } catch (err: any) {
+      setIPEnrichError(err.message || 'IP, ASN, and RDAP enrichment failed');
+    } finally {
+      setRunningIPEnrich(false);
     }
   };
 
@@ -479,21 +528,32 @@ export const App: React.FC = () => {
 
                       <button
                         onClick={handleRunResolve}
-                        disabled={runningResolve || runningCT || assets.length === 0}
+                        disabled={runningResolve || runningCT || runningIPEnrich || assets.length === 0}
                         className="btn btn-primary"
                         style={{ padding: '0.65rem 1.25rem' }}
                       >
                         <Radio size={15} className={runningResolve ? 'spin' : ''} style={{ animation: runningResolve ? 'spin 1s linear infinite' : 'none' }} />
                         <span>{runningResolve ? 'Probing DNS & HTTP...' : '2. Run DNS & Reachability'}</span>
                       </button>
+
+                      <button
+                        onClick={handleRunIPEnrich}
+                        disabled={runningIPEnrich || runningResolve || runningCT || dnsRecords.length === 0}
+                        className="btn btn-secondary"
+                        style={{ padding: '0.65rem 1.25rem' }}
+                      >
+                        <Network size={15} className={runningIPEnrich ? 'spin' : ''} style={{ animation: runningIPEnrich ? 'spin 1s linear infinite' : 'none' }} />
+                        <span>{runningIPEnrich ? 'Enriching IPs...' : '3. Run IP Intelligence'}</span>
+                      </button>
                     </div>
                   </div>
 
                   {ctError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ctError}</div>}
                   {resolveError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{resolveError}</div>}
+                  {ipEnrichError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ipEnrichError}</div>}
                 </div>
 
-                {/* Metrics Grid (if resolution executed) */}
+                {/* DNS & Reachability Metrics Grid (if resolution executed) */}
                 {resolveResult && (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
                     <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
@@ -519,6 +579,32 @@ export const App: React.FC = () => {
                     <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Services</div>
                       <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.services_discovered}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stage 4 IP / ASN / RDAP Enrichment Metrics Grid */}
+                {ipEnrichResult && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>IPs Processed</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{ipEnrichResult.ips_processed}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Public IPs</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{ipEnrichResult.public_ips}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Skipped (Private)</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{ipEnrichResult.skipped_non_public}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>ASN Enriched</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{ipEnrichResult.asn_success}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>RDAP Enriched</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{ipEnrichResult.rdap_success}</div>
                     </div>
                   </div>
                 )}
@@ -708,6 +794,78 @@ export const App: React.FC = () => {
                               </td>
                               <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
                                 {new Date(svc.observed_at).toLocaleTimeString()}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Discovered IP Addresses & Network Intelligence Section (Stage 4) */}
+                {ipAddresses.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Globe size={18} color="var(--cyan-400)" />
+                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                          Discovered IP Addresses & Network Intelligence ({ipAddresses.length})
+                        </h3>
+                      </div>
+                      {asns.length > 0 && (
+                        <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
+                          {asns.length} Distinct Autonomous Systems
+                        </span>
+                      )}
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '340px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>IP Address</th>
+                            <th>Type</th>
+                            <th>ASN</th>
+                            <th>Organization / Network</th>
+                            <th>Allocated Prefix</th>
+                            <th>Country</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {ipAddresses.map(ip => (
+                            <tr key={ip.id}>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                {ip.ip_address}
+                              </td>
+                              <td>
+                                <span className="badge badge-neutral font-mono" style={{ fontSize: '0.7rem' }}>
+                                  IPv{ip.ip_version}
+                                </span>
+                              </td>
+                              <td>
+                                {ip.asn ? (
+                                  <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
+                                    AS{ip.asn.asn_number}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                                )}
+                              </td>
+                              <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                {ip.organization || ip.asn?.name || '—'}
+                              </td>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                {ip.asn?.allocated_prefix || '—'}
+                              </td>
+                              <td>
+                                {ip.country ? (
+                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                    {ip.country}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
+                                )}
                               </td>
                             </tr>
                           ))}

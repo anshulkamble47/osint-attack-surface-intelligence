@@ -8,6 +8,9 @@ import {
   DNSReachabilityResponse,
   DNSRecordSummary,
   ServiceExposureSummary,
+  IPEnrichmentResponse,
+  IPAddressSummary,
+  ASNSummary,
 } from '../types/api';
 
 const API_BASE = '/api';
@@ -137,6 +140,34 @@ export async function listInvestigationServices(
   investigationId: string
 ): Promise<ServiceExposureSummary[]> {
   return request<ServiceExposureSummary[]>(`/investigations/${investigationId}/services`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function enrichInvestigationIPs(
+  token: string,
+  investigationId: string
+): Promise<IPEnrichmentResponse> {
+  return request<IPEnrichmentResponse>(`/investigations/${investigationId}/enrich/ip`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationIPAddresses(
+  token: string,
+  investigationId: string
+): Promise<IPAddressSummary[]> {
+  return request<IPAddressSummary[]>(`/investigations/${investigationId}/ip-addresses`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationASNs(
+  token: string,
+  investigationId: string
+): Promise<ASNSummary[]> {
+  return request<ASNSummary[]>(`/investigations/${investigationId}/asns`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 }

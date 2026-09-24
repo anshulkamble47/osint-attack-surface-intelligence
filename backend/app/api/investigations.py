@@ -12,8 +12,9 @@ from backend.app.core.logging import logger
 from backend.app.database.connection import get_db
 from backend.app.models.user import User
 from backend.app.models.investigation import Target, Investigation, ScanRun
-from backend.app.models.asset import Asset, Domain, Subdomain, DNSRecord, ServiceExposure
+from backend.app.models.asset import Asset, Domain, Subdomain, DNSRecord, ServiceExposure, IPAddress, ASN, IPObservation
 from backend.app.models.certificate import Certificate, subdomain_certificates
+from backend.app.models.evidence import Evidence
 from backend.app.schemas.investigation import (
     InvestigationCreateRequest,
     InvestigationResponse,
@@ -24,10 +25,19 @@ from backend.app.schemas.investigation import (
     ServiceExposureSummaryResponse,
     CandidateResolutionDetail,
     DNSReachabilityResponse,
+    ASNSummaryResponse,
+    RDAPSummaryResponse,
+    IPAddressSummaryResponse,
+    IPObservationSummaryResponse,
+    IPEnrichmentDetail,
+    IPEnrichmentResponse,
 )
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
 from backend.app.services.reachability_service import ReachabilityService
+from backend.app.services.ip_service import IPService
+from backend.app.services.asn_service import ASNService
+from backend.app.services.rdap_service import RDAPService
 
 
 def get_ct_service() -> CTService:
@@ -43,6 +53,21 @@ def get_dns_service() -> DNSService:
 def get_reachability_service() -> ReachabilityService:
     """Dependency provider returning ReachabilityService instance."""
     return ReachabilityService()
+
+
+def get_ip_service() -> IPService:
+    """Dependency provider returning IPService instance."""
+    return IPService()
+
+
+def get_asn_service() -> ASNService:
+    """Dependency provider returning ASNService instance."""
+    return ASNService()
+
+
+def get_rdap_service() -> RDAPService:
+    """Dependency provider returning RDAPService instance."""
+    return RDAPService()
 
 
 
@@ -827,4 +852,465 @@ def list_investigation_services(
     ).scalars().all()
 
     return [ServiceExposureSummaryResponse.model_validate(s) for s in services]
+
+
+@router.post(
+    "/{investigation_id}/enrich/ip",
+    response_model=IPEnrichmentResponse,
+    summary="Run IP / ASN / RDAP Intelligence Enrichment",
+    description=(
+        "Enriches discovered IP addresses (extracted from A and AAAA DNS records) with "
+        "Autonomous System Numbers (ASN), network prefixes, and RDAP registration metadata. "
+        "Associates observations with a new ScanRun."
+    ),
+)
+@router.post(
+    "/{investigation_id}/ip-enrichment",
+    response_model=IPEnrichmentResponse,
+    include_in_schema=False,
+)
+def run_ip_enrichment(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    ip_service: IPService = Depends(get_ip_service),
+    asn_service: ASNService = Depends(get_asn_service),
+    rdap_service: RDAPService = Depends(get_rdap_service),
+) -> IPEnrichmentResponse:
+    """Execute Stage 4 IP / ASN / RDAP Intelligence Enrichment."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    target = investigation.target
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target associated with investigation not found",
+        )
+
+    target_domain = target.primary_domain
+    now_utc = datetime.now(timezone.utc)
+
+    # 1. Fetch all A and AAAA DNS records associated with subdomains under this investigation
+    dns_records = db.execute(
+        select(DNSRecord)
+        .join(Subdomain, DNSRecord.subdomain_id == Subdomain.id)
+        .join(Asset, Subdomain.asset_id == Asset.id)
+        .where(
+            Asset.investigation_id == investigation_id,
+            DNSRecord.record_type.in_(["A", "AAAA"]),
+        )
+    ).scalars().all()
+
+    # 2. Extract, validate, normalize, and deduplicate IPs
+    unique_ip_entries = ip_service.extract_unique_ips_from_records(dns_records)
+
+    # 3. Initialize a new ScanRun for this IP enrichment operation
+    scan_run_count = db.execute(
+        select(func.count(ScanRun.id)).where(ScanRun.investigation_id == investigation.id)
+    ).scalar() or 0
+
+    scan_run = ScanRun(
+        investigation_id=investigation.id,
+        run_number=scan_run_count + 1,
+        status="running",
+        started_at=now_utc,
+    )
+    db.add(scan_run)
+    db.flush()
+
+    results_detail: List[IPEnrichmentDetail] = []
+    public_ips_count = 0
+    skipped_non_public_count = 0
+    asn_success_count = 0
+    rdap_success_count = 0
+    failed_count = 0
+
+    for entry in unique_ip_entries:
+        ip_str = entry["ip_address"]
+        ip_version = entry["ip_version"]
+        is_public = entry["is_public"]
+
+        if not is_public:
+            skipped_non_public_count += 1
+            results_detail.append(
+                IPEnrichmentDetail(
+                    ip_address=ip_str,
+                    ip_version=ip_version,
+                    is_public=False,
+                    status="skipped_non_public",
+                    error="Non-public / reserved IP address. External ASN and RDAP queries skipped.",
+                )
+            )
+            continue
+
+        public_ips_count += 1
+
+        # Step A: Perform ASN lookup
+        asn_info = asn_service.lookup(ip_str)
+        asn_db = None
+        asn_summary: Optional[ASNSummaryResponse] = None
+
+        if asn_info and asn_info.asn_number:
+            asn_success_count += 1
+            asn_db = db.execute(
+                select(ASN).where(ASN.asn_number == asn_info.asn_number)
+            ).scalar_one_or_none()
+
+            if not asn_db:
+                asn_db = ASN(
+                    asn_number=asn_info.asn_number,
+                    name=asn_info.name or f"AS{asn_info.asn_number}",
+                    country=asn_info.country,
+                    allocated_prefix=asn_info.allocated_prefix,
+                )
+                db.add(asn_db)
+                db.flush()
+            else:
+                if asn_info.name and not asn_db.name:
+                    asn_db.name = asn_info.name
+                if asn_info.country and not asn_db.country:
+                    asn_db.country = asn_info.country
+                if asn_info.allocated_prefix and not asn_db.allocated_prefix:
+                    asn_db.allocated_prefix = asn_info.allocated_prefix
+
+            asn_summary = ASNSummaryResponse(
+                id=asn_db.id,
+                asn_number=asn_db.asn_number,
+                name=asn_db.name,
+                country=asn_db.country,
+                allocated_prefix=asn_db.allocated_prefix,
+            )
+
+        # Step B: Perform RDAP lookup
+        rdap_info = rdap_service.lookup(ip_str)
+        rdap_summary: Optional[RDAPSummaryResponse] = None
+
+        if rdap_info:
+            rdap_success_count += 1
+            rdap_summary = RDAPSummaryResponse(
+                network_name=rdap_info.network_name,
+                handle=rdap_info.handle,
+                start_address=rdap_info.start_address,
+                end_address=rdap_info.end_address,
+                cidr=rdap_info.cidr,
+                country=rdap_info.country,
+                organization=rdap_info.organization,
+                status=rdap_info.status,
+                registration_date=rdap_info.registration_date,
+                last_changed_date=rdap_info.last_changed_date,
+            )
+
+        # Step C: Persist / Update IP Asset
+        ip_asset = db.execute(
+            select(Asset).where(
+                Asset.target_id == target.id,
+                Asset.investigation_id == investigation.id,
+                Asset.asset_type == "ip",
+                Asset.value == ip_str,
+            )
+        ).scalar_one_or_none()
+
+        if not ip_asset:
+            ip_asset = Asset(
+                target_id=target.id,
+                investigation_id=investigation.id,
+                asset_type="ip",
+                value=ip_str,
+                is_active=True,
+                confidence=1.0,
+                source="dns_ip_enrichment",
+                tags=["ip_asset", f"ipv{ip_version}"],
+                last_scan_run_id=scan_run.id,
+            )
+            db.add(ip_asset)
+            db.flush()
+        else:
+            ip_asset.last_scan_run_id = scan_run.id
+            ip_asset.last_seen_at = now_utc
+            ip_asset.is_active = True
+
+        # Step D: Persist / Update IPAddress entity
+        ip_addr_db = db.execute(
+            select(IPAddress).where(IPAddress.ip_address == ip_str)
+        ).scalar_one_or_none()
+
+        country_val = (rdap_info.country if rdap_info and rdap_info.country else None) or (
+            asn_info.country if asn_info else None
+        )
+        org_val = (rdap_info.organization if rdap_info and rdap_info.organization else None) or (
+            asn_info.name if asn_info else None
+        )
+
+        if not ip_addr_db:
+            ip_addr_db = IPAddress(
+                asset_id=ip_asset.id,
+                ip_address=ip_str,
+                ip_version=ip_version,
+                asn_id=asn_db.id if asn_db else None,
+                country=country_val,
+                organization=org_val,
+                is_active=True,
+            )
+            db.add(ip_addr_db)
+            db.flush()
+        else:
+            if asn_db:
+                ip_addr_db.asn_id = asn_db.id
+            if country_val:
+                ip_addr_db.country = country_val
+            if org_val:
+                ip_addr_db.organization = org_val
+            ip_addr_db.is_active = True
+
+        # Step D2: Persist point-in-time IPObservation for historical scan isolation
+        existing_obs = db.execute(
+            select(IPObservation).where(
+                IPObservation.scan_run_id == scan_run.id,
+                IPObservation.ip_address_id == ip_addr_db.id,
+            )
+        ).scalar_one_or_none()
+
+        if not existing_obs:
+            obs_db = IPObservation(
+                scan_run_id=scan_run.id,
+                ip_address_id=ip_addr_db.id,
+                asn_id=asn_db.id if asn_db else None,
+                observed_at=now_utc,
+            )
+            db.add(obs_db)
+            db.flush()
+
+        # Step E: Persist Cryptographic Evidence for RDAP payload if available
+        if rdap_info and rdap_info.raw_json_str:
+            ref_count = db.execute(select(func.count(Evidence.id))).scalar() or 0
+            ref_code = f"EV-{now_utc.strftime('%Y%m%d')}-{ref_count + 1:05d}"
+            sha_hash = Evidence.compute_sha256(rdap_info.raw_json_str)
+
+            evidence = Evidence(
+                reference_code=ref_code,
+                investigation_id=investigation.id,
+                asset_id=ip_asset.id,
+                scan_run_id=scan_run.id,
+                evidence_type="rdap",
+                source="rdap_bootstrap",
+                raw_payload=rdap_info.raw_json_str,
+                sha256_hash=sha_hash,
+                collected_at=now_utc,
+                verified_integrity=True,
+            )
+            db.add(evidence)
+            db.flush()
+
+        detail_status = "enriched" if (asn_summary or rdap_summary) else "failed"
+        if detail_status == "failed":
+            failed_count += 1
+
+        results_detail.append(
+            IPEnrichmentDetail(
+                ip_address=ip_str,
+                ip_version=ip_version,
+                is_public=True,
+                status=detail_status,
+                asn=asn_summary,
+                rdap=rdap_summary,
+                error=None if detail_status == "enriched" else "External ASN and RDAP lookup failed or returned no data",
+            )
+        )
+
+    # 4. Finalize ScanRun
+    scan_run.status = "completed"
+    scan_run.completed_at = datetime.now(timezone.utc)
+    scan_run.total_discovered_assets = len(unique_ip_entries)
+    scan_run.summary = {
+        "source": "ip_enrichment",
+        "ips_processed": len(unique_ip_entries),
+        "public_ips": public_ips_count,
+        "skipped_non_public": skipped_non_public_count,
+        "asn_success": asn_success_count,
+        "rdap_success": rdap_success_count,
+        "failed": failed_count,
+    }
+
+    # Update Investigation
+    investigation.status = "active"
+    db.commit()
+
+    logger.info(
+        f"Completed IP enrichment for '{target_domain}' (Investigation {investigation_id}): "
+        f"{len(unique_ip_entries)} IPs processed ({public_ips_count} public, {skipped_non_public_count} skipped, "
+        f"{asn_success_count} ASN, {rdap_success_count} RDAP)."
+    )
+
+    return IPEnrichmentResponse(
+        investigation_id=investigation.id,
+        scan_run_id=scan_run.id,
+        target_domain=target_domain,
+        ips_processed=len(unique_ip_entries),
+        public_ips=public_ips_count,
+        skipped_non_public=skipped_non_public_count,
+        asn_success=asn_success_count,
+        rdap_success=rdap_success_count,
+        failed=failed_count,
+        results=results_detail,
+        completed_at=scan_run.completed_at,
+    )
+
+
+@router.get(
+    "/{investigation_id}/ip-addresses",
+    response_model=List[IPAddressSummaryResponse],
+    summary="List Discovered IP Addresses for Investigation",
+    description="Returns all normalized IP addresses with ASN and geolocation/organization details under this investigation.",
+)
+def list_investigation_ip_addresses(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[IPAddressSummaryResponse]:
+    """Retrieve IP address assets and associated ASN metadata for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    ip_records = db.execute(
+        select(IPAddress)
+        .join(Asset, IPAddress.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation_id)
+        .order_by(IPAddress.ip_address.asc())
+    ).scalars().all()
+
+    summaries: List[IPAddressSummaryResponse] = []
+    for ip_rec in ip_records:
+        asn_summary = None
+        if ip_rec.asn:
+            asn_summary = ASNSummaryResponse(
+                id=ip_rec.asn.id,
+                asn_number=ip_rec.asn.asn_number,
+                name=ip_rec.asn.name,
+                country=ip_rec.asn.country,
+                allocated_prefix=ip_rec.asn.allocated_prefix,
+            )
+
+        summaries.append(
+            IPAddressSummaryResponse(
+                id=ip_rec.id,
+                asset_id=ip_rec.asset_id,
+                ip_address=ip_rec.ip_address,
+                ip_version=ip_rec.ip_version,
+                reverse_dns=ip_rec.reverse_dns,
+                asn_id=ip_rec.asn_id,
+                asn=asn_summary,
+                country=ip_rec.country,
+                region=ip_rec.region,
+                organization=ip_rec.organization,
+                is_active=ip_rec.is_active,
+                last_scan_run_id=ip_rec.asset.last_scan_run_id if ip_rec.asset else None,
+            )
+        )
+
+    return summaries
+
+
+@router.get(
+    "/{investigation_id}/ip-observations",
+    response_model=List[IPObservationSummaryResponse],
+    summary="List Historical IP Observations for Investigation",
+    description="Returns point-in-time IP-to-ASN scan observations associated with ScanRuns under this investigation.",
+)
+def list_investigation_ip_observations(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[IPObservationSummaryResponse]:
+    """Retrieve historical IPObservation records for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    query = (
+        select(IPObservation)
+        .join(ScanRun, IPObservation.scan_run_id == ScanRun.id)
+        .where(ScanRun.investigation_id == investigation_id)
+        .order_by(IPObservation.observed_at.desc())
+    )
+    if scan_run_id:
+        query = query.where(IPObservation.scan_run_id == scan_run_id)
+
+    observations = db.execute(query).scalars().all()
+
+    return [
+        IPObservationSummaryResponse(
+            id=obs.id,
+            scan_run_id=obs.scan_run_id,
+            ip_address_id=obs.ip_address_id,
+            ip_address=obs.ip_address.ip_address if obs.ip_address else None,
+            asn_id=obs.asn_id,
+            asn_number=obs.asn.asn_number if obs.asn else None,
+            asn_name=obs.asn.name if obs.asn else None,
+            observed_at=obs.observed_at,
+        )
+        for obs in observations
+    ]
+
+
+@router.get(
+    "/{investigation_id}/asns",
+    response_model=List[ASNSummaryResponse],
+    summary="List Discovered Autonomous Systems for Investigation",
+    description="Returns all unique Autonomous System Numbers (ASNs) observed for IP addresses in this investigation.",
+)
+def list_investigation_asns(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[ASNSummaryResponse]:
+    """Retrieve distinct ASNs observed across IP addresses in the investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    # Query distinct ASNs associated with IPs in this investigation
+    asn_rows = db.execute(
+        select(ASN, func.count(IPAddress.id).label("ip_count"))
+        .join(IPAddress, IPAddress.asn_id == ASN.id)
+        .join(Asset, IPAddress.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation_id)
+        .group_by(ASN.id)
+        .order_by(ASN.asn_number.asc())
+    ).all()
+
+    return [
+        ASNSummaryResponse(
+            id=asn.id,
+            asn_number=asn.asn_number,
+            name=asn.name,
+            country=asn.country,
+            allocated_prefix=asn.allocated_prefix,
+            ip_count=ip_count,
+        )
+        for asn, ip_count in asn_rows
+    ]
 

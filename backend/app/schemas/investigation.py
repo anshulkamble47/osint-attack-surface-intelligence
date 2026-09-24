@@ -196,3 +196,91 @@ class DNSReachabilityResponse(BaseModel):
         "IP/ASN enrichment and detailed technology fingerprinting occur in subsequent stages."
     )
 
+
+class ASNSummaryResponse(BaseModel):
+    """Autonomous System Number intelligence summary."""
+    id: Optional[uuid.UUID] = None
+    asn_number: int
+    name: str
+    country: Optional[str] = None
+    allocated_prefix: Optional[str] = None
+    ip_count: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RDAPSummaryResponse(BaseModel):
+    """Normalized RDAP network registration observation summary."""
+    network_name: Optional[str] = None
+    handle: Optional[str] = None
+    start_address: Optional[str] = None
+    end_address: Optional[str] = None
+    cidr: Optional[str] = None
+    country: Optional[str] = None
+    organization: Optional[str] = None
+    status: List[str] = Field(default_factory=list)
+    registration_date: Optional[datetime] = None
+    last_changed_date: Optional[datetime] = None
+
+
+class IPAddressSummaryResponse(BaseModel):
+    """Normalized IP address asset summary."""
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    ip_address: str
+    ip_version: int
+    reverse_dns: Optional[str] = None
+    asn_id: Optional[uuid.UUID] = None
+    asn: Optional[ASNSummaryResponse] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    organization: Optional[str] = None
+    is_active: bool = True
+    last_scan_run_id: Optional[uuid.UUID] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IPObservationSummaryResponse(BaseModel):
+    """Historical IP observation summary linking an IP Address with an ASN and ScanRun."""
+    id: uuid.UUID
+    scan_run_id: uuid.UUID
+    ip_address_id: uuid.UUID
+    ip_address: Optional[str] = None
+    asn_id: Optional[uuid.UUID] = None
+    asn_number: Optional[int] = None
+    asn_name: Optional[str] = None
+    observed_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class IPEnrichmentDetail(BaseModel):
+    """Enrichment result for an individual discovered IP address."""
+    ip_address: str
+    ip_version: int
+    is_public: bool
+    status: str  # enriched, skipped_non_public, failed, partial
+    asn: Optional[ASNSummaryResponse] = None
+    rdap: Optional[RDAPSummaryResponse] = None
+    error: Optional[str] = None
+
+
+class IPEnrichmentResponse(BaseModel):
+    """Structured response returned by IP / ASN / RDAP Intelligence Enrichment (Stage 4)."""
+    investigation_id: uuid.UUID
+    scan_run_id: uuid.UUID
+    target_domain: str
+    ips_processed: int
+    public_ips: int
+    skipped_non_public: int
+    asn_success: int
+    rdap_success: int
+    failed: int
+    results: List[IPEnrichmentDetail] = Field(default_factory=list)
+    completed_at: datetime
+    note: str = (
+        "IP intelligence enrichment completed. "
+        "ASN and RDAP registration observations persisted and linked with ScanRun."
+    )
+

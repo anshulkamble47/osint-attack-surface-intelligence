@@ -9,6 +9,7 @@ from backend.app.models.asset import (
     DNSRecord,
     ASN,
     IPAddress,
+    IPObservation,
     ServiceExposure,
 )
 from backend.app.models.certificate import Certificate, subdomain_certificates
@@ -30,6 +31,7 @@ __all__ = [
     "DNSRecord",
     "ASN",
     "IPAddress",
+    "IPObservation",
     "ServiceExposure",
     "Certificate",
     "subdomain_certificates",

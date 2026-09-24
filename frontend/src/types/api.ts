@@ -133,3 +133,65 @@ export interface DNSReachabilityResponse {
   note: string;
 }
 
+export interface ASNSummary {
+  id?: string | null;
+  asn_number: number;
+  name: string;
+  country?: string | null;
+  allocated_prefix?: string | null;
+  ip_count?: number | null;
+}
+
+export interface RDAPSummary {
+  network_name?: string | null;
+  handle?: string | null;
+  start_address?: string | null;
+  end_address?: string | null;
+  cidr?: string | null;
+  country?: string | null;
+  organization?: string | null;
+  status: string[];
+  registration_date?: string | null;
+  last_changed_date?: string | null;
+}
+
+export interface IPAddressSummary {
+  id: string;
+  asset_id: string;
+  ip_address: string;
+  ip_version: number;
+  reverse_dns?: string | null;
+  asn_id?: string | null;
+  asn?: ASNSummary | null;
+  country?: string | null;
+  region?: string | null;
+  organization?: string | null;
+  is_active: boolean;
+  last_scan_run_id?: string | null;
+}
+
+export interface IPEnrichmentDetail {
+  ip_address: string;
+  ip_version: number;
+  is_public: boolean;
+  status: string;
+  asn?: ASNSummary | null;
+  rdap?: RDAPSummary | null;
+  error?: string | null;
+}
+
+export interface IPEnrichmentResponse {
+  investigation_id: string;
+  scan_run_id: string;
+  target_domain: string;
+  ips_processed: number;
+  public_ips: number;
+  skipped_non_public: number;
+  asn_success: number;
+  rdap_success: number;
+  failed: number;
+  results: IPEnrichmentDetail[];
+  completed_at: string;
+  note: string;
+}
+
