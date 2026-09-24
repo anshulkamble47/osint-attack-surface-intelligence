@@ -24,6 +24,12 @@ from backend.app.schemas.investigation import (
     IPObservationSummaryResponse,
     IPEnrichmentDetail,
     IPEnrichmentResponse,
+    TechnologySummaryResponse,
+    SecurityHeaderDetail,
+    SecurityHeadersSummaryResponse,
+    TLSMetadataSummaryResponse,
+    ServiceFingerprintDetail,
+    FingerprintResponse,
 )
 
 __all__ = [
@@ -48,5 +54,11 @@ __all__ = [
     "IPObservationSummaryResponse",
     "IPEnrichmentDetail",
     "IPEnrichmentResponse",
+    "TechnologySummaryResponse",
+    "SecurityHeaderDetail",
+    "SecurityHeadersSummaryResponse",
+    "TLSMetadataSummaryResponse",
+    "ServiceFingerprintDetail",
+    "FingerprintResponse",
 ]
 

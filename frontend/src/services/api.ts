@@ -11,6 +11,10 @@ import {
   IPEnrichmentResponse,
   IPAddressSummary,
   ASNSummary,
+  FingerprintResponse,
+  TechnologySummary,
+  SecurityHeadersSummary,
+  TLSMetadataSummary,
 } from '../types/api';
 
 const API_BASE = '/api';
@@ -171,4 +175,48 @@ export async function listInvestigationASNs(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function runFingerprinting(
+  token: string,
+  investigationId: string
+): Promise<FingerprintResponse> {
+  return request<FingerprintResponse>(`/investigations/${investigationId}/fingerprint`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationTechnologies(
+  token: string,
+  investigationId: string,
+  scanRunId?: string
+): Promise<TechnologySummary[]> {
+  const query = scanRunId ? `?scan_run_id=${scanRunId}` : '';
+  return request<TechnologySummary[]>(`/investigations/${investigationId}/technologies${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationSecurityHeaders(
+  token: string,
+  investigationId: string,
+  scanRunId?: string
+): Promise<SecurityHeadersSummary[]> {
+  const query = scanRunId ? `?scan_run_id=${scanRunId}` : '';
+  return request<SecurityHeadersSummary[]>(`/investigations/${investigationId}/security-headers${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationTLSMetadata(
+  token: string,
+  investigationId: string,
+  scanRunId?: string
+): Promise<TLSMetadataSummary[]> {
+  const query = scanRunId ? `?scan_run_id=${scanRunId}` : '';
+  return request<TLSMetadataSummary[]>(`/investigations/${investigationId}/tls-metadata${query}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 

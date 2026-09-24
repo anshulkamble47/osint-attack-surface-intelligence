@@ -195,3 +195,88 @@ export interface IPEnrichmentResponse {
   note: string;
 }
 
+export interface TechnologySummary {
+  id: string;
+  asset_id: string;
+  asset_value?: string | null;
+  service_id?: string | null;
+  scan_run_id?: string | null;
+  name: string;
+  version?: string | null;
+  cpe?: string | null;
+  category: string;
+  confidence: number;
+  evidence_source: string;
+  detected_at: string;
+}
+
+export interface SecurityHeaderDetail {
+  header_name: string;
+  present: boolean;
+  value?: string | null;
+  status: string;
+  interpretation: string;
+}
+
+export interface SecurityHeadersSummary {
+  service_id: string;
+  asset_id: string;
+  asset_value: string;
+  url: string;
+  port: number;
+  protocol: string;
+  service_name: string;
+  http_status?: number | null;
+  headers: Record<string, SecurityHeaderDetail>;
+  scan_run_id?: string | null;
+  observed_at: string;
+}
+
+export interface TLSMetadataSummary {
+  service_id: string;
+  asset_id: string;
+  asset_value: string;
+  url: string;
+  tls_version?: string | null;
+  cipher_suite?: string | null;
+  cert_subject?: string | null;
+  cert_issuer?: string | null;
+  cert_valid_from?: string | null;
+  cert_valid_to?: string | null;
+  cert_san_list: string[];
+  scan_run_id?: string | null;
+  observed_at: string;
+}
+
+export interface ServiceFingerprintDetail {
+  service_id: string;
+  asset_id: string;
+  hostname: string;
+  url: string;
+  port: number;
+  service_name: string;
+  is_reachable: boolean;
+  status_code?: number | null;
+  page_title?: string | null;
+  technologies_count: number;
+  technologies: TechnologySummary[];
+  security_headers?: SecurityHeadersSummary | null;
+  tls_metadata?: TLSMetadataSummary | null;
+  error?: string | null;
+}
+
+export interface FingerprintResponse {
+  investigation_id: string;
+  scan_run_id: string;
+  target_domain: string;
+  services_processed: number;
+  reachable: number;
+  technologies_detected: number;
+  security_headers_analyzed: number;
+  tls_observations: number;
+  results: ServiceFingerprintDetail[];
+  completed_at: string;
+  note: string;
+}
+
+

@@ -13,6 +13,9 @@ import {
   XCircle,
   Server,
   Network,
+  Cpu,
+  ShieldCheck,
+  Code2,
 } from 'lucide-react';
 
 import { 
@@ -29,6 +32,10 @@ import {
   enrichInvestigationIPs,
   listInvestigationIPAddresses,
   listInvestigationASNs,
+  runFingerprinting,
+  listInvestigationTechnologies,
+  listInvestigationSecurityHeaders,
+  listInvestigationTLSMetadata,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -42,6 +49,10 @@ import {
   IPEnrichmentResponse,
   IPAddressSummary,
   ASNSummary,
+  FingerprintResponse,
+  TechnologySummary,
+  SecurityHeadersSummary,
+  TLSMetadataSummary,
 } from './types/api';
 
 export const App: React.FC = () => {
@@ -91,6 +102,14 @@ export const App: React.FC = () => {
   const [asns, setASNs] = useState<ASNSummary[]>([]);
   const [ipEnrichError, setIPEnrichError] = useState<string | null>(null);
 
+  // Stage 5 Technology & Security Fingerprint State
+  const [runningFingerprint, setRunningFingerprint] = useState(false);
+  const [fingerprintResult, setFingerprintResult] = useState<FingerprintResponse | null>(null);
+  const [technologies, setTechnologies] = useState<TechnologySummary[]>([]);
+  const [securityHeaders, setSecurityHeaders] = useState<SecurityHeadersSummary[]>([]);
+  const [tlsMetadata, setTLSMetadata] = useState<TLSMetadataSummary[]>([]);
+  const [fingerprintError, setFingerprintError] = useState<string | null>(null);
+
   // Probe health
   const checkHealth = useCallback(async () => {
     try {
@@ -124,7 +143,7 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load assets, DNS records, services, IP addresses, and ASNs when selected investigation changes
+  // Load assets, DNS records, services, IP addresses, ASNs, technologies, and security observations
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
@@ -142,8 +161,18 @@ export const App: React.FC = () => {
       listInvestigationASNs(token, selectedInv.id)
         .then(setASNs)
         .catch(console.error);
+      listInvestigationTechnologies(token, selectedInv.id)
+        .then(setTechnologies)
+        .catch(console.error);
+      listInvestigationSecurityHeaders(token, selectedInv.id)
+        .then(setSecurityHeaders)
+        .catch(console.error);
+      listInvestigationTLSMetadata(token, selectedInv.id)
+        .then(setTLSMetadata)
+        .catch(console.error);
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult]);
+
 
   // Handle Login
   const handleLogin = async (e: React.FormEvent) => {
@@ -192,11 +221,15 @@ export const App: React.FC = () => {
     setCTResult(null);
     setResolveResult(null);
     setIPEnrichResult(null);
+    setFingerprintResult(null);
     setAssets([]);
     setDnsRecords([]);
     setServices([]);
     setIPAddresses([]);
     setASNs([]);
+    setTechnologies([]);
+    setSecurityHeaders([]);
+    setTLSMetadata([]);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -214,8 +247,12 @@ export const App: React.FC = () => {
       setCTResult(null);
       setResolveResult(null);
       setIPEnrichResult(null);
+      setFingerprintResult(null);
       setIPAddresses([]);
       setASNs([]);
+      setTechnologies([]);
+      setSecurityHeaders([]);
+      setTLSMetadata([]);
       setInvName('');
       setInvDomain('');
       setInvOrg('');
@@ -286,6 +323,31 @@ export const App: React.FC = () => {
       setIPEnrichError(err.message || 'IP, ASN, and RDAP enrichment failed');
     } finally {
       setRunningIPEnrich(false);
+    }
+  };
+
+  // Handle Run Technology & Security Fingerprint (Stage 5)
+  const handleRunFingerprint = async () => {
+    if (!token || !selectedInv) return;
+    setRunningFingerprint(true);
+    setFingerprintError(null);
+    try {
+      const res = await runFingerprinting(token, selectedInv.id);
+      setFingerprintResult(res);
+      const [updatedAssets, updatedTechs, updatedHeaders, updatedTLS] = await Promise.all([
+        listInvestigationAssets(token, selectedInv.id),
+        listInvestigationTechnologies(token, selectedInv.id),
+        listInvestigationSecurityHeaders(token, selectedInv.id),
+        listInvestigationTLSMetadata(token, selectedInv.id),
+      ]);
+      setAssets(updatedAssets);
+      setTechnologies(updatedTechs);
+      setSecurityHeaders(updatedHeaders);
+      setTLSMetadata(updatedTLS);
+    } catch (err: any) {
+      setFingerprintError(err.message || 'Technology & Security Fingerprinting failed');
+    } finally {
+      setRunningFingerprint(false);
     }
   };
 
@@ -545,12 +607,23 @@ export const App: React.FC = () => {
                         <Network size={15} className={runningIPEnrich ? 'spin' : ''} style={{ animation: runningIPEnrich ? 'spin 1s linear infinite' : 'none' }} />
                         <span>{runningIPEnrich ? 'Enriching IPs...' : '3. Run IP Intelligence'}</span>
                       </button>
+
+                      <button
+                        onClick={handleRunFingerprint}
+                        disabled={runningFingerprint || runningIPEnrich || runningResolve || runningCT || assets.length === 0}
+                        className="btn btn-primary"
+                        style={{ padding: '0.65rem 1.25rem' }}
+                      >
+                        <Cpu size={15} className={runningFingerprint ? 'spin' : ''} style={{ animation: runningFingerprint ? 'spin 1s linear infinite' : 'none' }} />
+                        <span>{runningFingerprint ? 'Fingerprinting Web Services...' : '4. Technology & Security'}</span>
+                      </button>
                     </div>
                   </div>
 
                   {ctError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ctError}</div>}
                   {resolveError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{resolveError}</div>}
                   {ipEnrichError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ipEnrichError}</div>}
+                  {fingerprintError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{fingerprintError}</div>}
                 </div>
 
                 {/* DNS & Reachability Metrics Grid (if resolution executed) */}
@@ -605,6 +678,32 @@ export const App: React.FC = () => {
                     <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
                       <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>RDAP Enriched</div>
                       <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{ipEnrichResult.rdap_success}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stage 5 Technology & Security Fingerprint Metrics Grid */}
+                {fingerprintResult && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Probed Services</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{fingerprintResult.services_processed}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Reachable HTTP/S</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{fingerprintResult.reachable}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>Techs Detected</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{fingerprintResult.technologies_detected}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Security Headers</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{fingerprintResult.security_headers_analyzed}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>TLS Sessions</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{fingerprintResult.tls_observations}</div>
                     </div>
                   </div>
                 )}
@@ -866,6 +965,184 @@ export const App: React.FC = () => {
                                 ) : (
                                   <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
                                 )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Observed Technology Fingerprints Section (Stage 5) */}
+                {technologies.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Code2 size={18} color="var(--cyan-400)" />
+                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                          Observed Technology Fingerprints ({technologies.length})
+                        </h3>
+                      </div>
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '340px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Asset / Hostname</th>
+                            <th>Technology</th>
+                            <th>Category</th>
+                            <th>Version</th>
+                            <th>Confidence</th>
+                            <th>Detection Evidence</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {technologies.map(tech => (
+                            <tr key={tech.id}>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                {tech.asset_value || '—'}
+                              </td>
+                              <td style={{ fontWeight: 600, color: 'var(--cyan-400)' }}>
+                                {tech.name}
+                              </td>
+                              <td>
+                                <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                  {tech.category}
+                                </span>
+                              </td>
+                              <td>
+                                {tech.version ? (
+                                  <span className="badge badge-success font-mono" style={{ fontSize: '0.75rem' }}>
+                                    {tech.version}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Not observable</span>
+                                )}
+                              </td>
+                              <td>
+                                <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>
+                                  {(tech.confidence * 100).toFixed(0)}%
+                                </span>
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                {tech.evidence_source}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* HTTP Security Headers Analysis Section (Stage 5) */}
+                {securityHeaders.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <ShieldCheck size={18} color="var(--cyan-400)" />
+                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                          HTTP Security Headers Analysis ({securityHeaders.length} Services)
+                        </h3>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                      {securityHeaders.map(svcHeader => (
+                        <div
+                          key={svcHeader.service_id}
+                          style={{
+                            background: 'rgba(15, 23, 42, 0.5)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: '8px',
+                            padding: '1rem',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                              <span style={{ fontWeight: 600, color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
+                                {svcHeader.url}
+                              </span>
+                              <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                {svcHeader.port}/{svcHeader.protocol}
+                              </span>
+                              {svcHeader.http_status && (
+                                <span className={`badge ${svcHeader.http_status < 400 ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.7rem' }}>
+                                  HTTP {svcHeader.http_status}
+                                </span>
+                              )}
+                            </div>
+                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                              Observed: {new Date(svcHeader.observed_at).toLocaleTimeString()}
+                            </span>
+                          </div>
+
+                          <div style={{ overflowX: 'auto' }}>
+                            <table className="data-table" style={{ fontSize: '0.8rem' }}>
+                              <thead>
+                                <tr>
+                                  <th>Security Header</th>
+                                  <th>Status</th>
+                                  <th>Observed Interpretation / Value</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {Object.entries(svcHeader.headers).map(([k, h]) => (
+                                  <tr key={k}>
+                                    <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{h.header_name}</td>
+                                    <td>
+                                      <span className={`badge ${h.present ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.7rem' }}>
+                                        {h.present ? 'Present' : 'Missing'}
+                                      </span>
+                                    </td>
+                                    <td style={{ color: h.present ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                                      {h.interpretation} {h.value ? `("${h.value}")` : ''}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* TLS Metadata Section (Stage 5) */}
+                {tlsMetadata.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
+                      <Lock size={18} color="var(--cyan-400)" />
+                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                        Observed TLS Session & Protocol Metadata ({tlsMetadata.length})
+                      </h3>
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>Endpoint URL</th>
+                            <th>TLS Protocol</th>
+                            <th>Observed</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {tlsMetadata.map((tls, idx) => (
+                            <tr key={idx}>
+                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
+                                {tls.url}
+                              </td>
+                              <td>
+                                <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
+                                  {tls.tls_version || 'TLS'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
+                                {new Date(tls.observed_at).toLocaleTimeString()}
                               </td>
                             </tr>
                           ))}

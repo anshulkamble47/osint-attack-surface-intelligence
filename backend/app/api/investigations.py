@@ -14,6 +14,7 @@ from backend.app.models.user import User
 from backend.app.models.investigation import Target, Investigation, ScanRun
 from backend.app.models.asset import Asset, Domain, Subdomain, DNSRecord, ServiceExposure, IPAddress, ASN, IPObservation
 from backend.app.models.certificate import Certificate, subdomain_certificates
+from backend.app.models.technology import Technology
 from backend.app.models.evidence import Evidence
 from backend.app.schemas.investigation import (
     InvestigationCreateRequest,
@@ -31,6 +32,12 @@ from backend.app.schemas.investigation import (
     IPObservationSummaryResponse,
     IPEnrichmentDetail,
     IPEnrichmentResponse,
+    TechnologySummaryResponse,
+    SecurityHeaderDetail,
+    SecurityHeadersSummaryResponse,
+    TLSMetadataSummaryResponse,
+    ServiceFingerprintDetail,
+    FingerprintResponse,
 )
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
@@ -38,6 +45,8 @@ from backend.app.services.reachability_service import ReachabilityService
 from backend.app.services.ip_service import IPService
 from backend.app.services.asn_service import ASNService
 from backend.app.services.rdap_service import RDAPService
+from backend.app.services.http_service import HTTPIntelligenceService
+from backend.app.services.technology_service import TechnologyService
 
 
 def get_ct_service() -> CTService:
@@ -68,6 +77,16 @@ def get_asn_service() -> ASNService:
 def get_rdap_service() -> RDAPService:
     """Dependency provider returning RDAPService instance."""
     return RDAPService()
+
+
+def get_http_intelligence_service() -> HTTPIntelligenceService:
+    """Dependency provider returning HTTPIntelligenceService instance."""
+    return HTTPIntelligenceService()
+
+
+def get_technology_service() -> TechnologyService:
+    """Dependency provider returning TechnologyService instance."""
+    return TechnologyService()
 
 
 
@@ -1313,4 +1332,468 @@ def list_investigation_asns(
         )
         for asn, ip_count in asn_rows
     ]
+
+
+@router.post(
+    "/{investigation_id}/fingerprint",
+    response_model=FingerprintResponse,
+    summary="Run Technology Fingerprinting & HTTP Security Intelligence",
+    description=(
+        "Passively inspects reachable HTTP/HTTPS web services discovered for this investigation, "
+        "analyzing HTTP response headers, meta markers, cookies, script tags to detect technologies, "
+        "evaluating passive HTTP security headers, collecting safe TLS session metadata for HTTPS endpoints, "
+        "and recording point-in-time observations linked to a new ScanRun."
+    ),
+)
+def run_fingerprinting(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    http_service: HTTPIntelligenceService = Depends(get_http_intelligence_service),
+    tech_service: TechnologyService = Depends(get_technology_service),
+) -> FingerprintResponse:
+    """Execute Stage 5 Technology Fingerprinting & HTTP Security Intelligence."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    target = investigation.target
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target associated with investigation not found",
+        )
+
+    target_domain = target.primary_domain
+    now_utc = datetime.now(timezone.utc)
+
+    # 1. Start a new ScanRun for this fingerprinting run
+    scan_run_count = db.execute(
+        select(func.count(ScanRun.id)).where(ScanRun.investigation_id == investigation.id)
+    ).scalar() or 0
+
+    scan_run = ScanRun(
+        investigation_id=investigation.id,
+        run_number=scan_run_count + 1,
+        status="running",
+        started_at=now_utc,
+    )
+    db.add(scan_run)
+    db.flush()
+
+    # 2. Retrieve candidate / resolving assets (domains & subdomains)
+    assets = db.execute(
+        select(Asset)
+        .where(
+            Asset.investigation_id == investigation.id,
+            Asset.asset_type.in_(["domain", "subdomain"]),
+        )
+        .order_by(Asset.value.asc())
+    ).scalars().all()
+
+    results_detail: List[ServiceFingerprintDetail] = []
+    services_processed_count = 0
+    reachable_count = 0
+    total_techs_count = 0
+    total_headers_analyzed_count = 0
+    total_tls_count = 0
+
+    ports_to_probe = [
+        (80, "tcp", "http"),
+        (443, "tcp", "https"),
+    ]
+
+    for asset in assets:
+        hostname = asset.value
+
+        # Fetch resolved A/AAAA IP records for pre-flight SSRF protection
+        dns_records = db.execute(
+            select(DNSRecord)
+            .join(Subdomain, DNSRecord.subdomain_id == Subdomain.id)
+            .where(
+                Subdomain.asset_id == asset.id,
+                DNSRecord.record_type.in_(["A", "AAAA"]),
+            )
+        ).scalars().all()
+
+        resolved_ips = [r.value for r in dns_records if r.value]
+
+        # Probe each web port
+        for port, protocol, service_name in ports_to_probe:
+            services_processed_count += 1
+
+            obs = http_service.probe_service(
+                hostname=hostname,
+                port=port,
+                protocol=protocol,
+                service_name=service_name,
+                resolved_ips=resolved_ips if resolved_ips else None,
+            )
+
+            if not obs.is_reachable:
+                # Unreachable or SSRF-blocked service
+                continue
+
+            reachable_count += 1
+
+            # Create or link ServiceExposure record for this ScanRun
+            svc_db = ServiceExposure(
+                asset_id=asset.id,
+                scan_run_id=scan_run.id,
+                port=port,
+                protocol=protocol,
+                service_name=service_name,
+                http_status=obs.status_code,
+                page_title=obs.page_title,
+                tls_version=obs.tls_metadata.tls_version if obs.tls_metadata else None,
+                security_headers={
+                    k: {
+                        "header_name": v.header_name,
+                        "present": v.present,
+                        "value": v.value,
+                        "status": v.status,
+                        "interpretation": v.interpretation,
+                    }
+                    for k, v in obs.security_headers.items()
+                },
+                banner=obs.server_header,
+                observed_at=obs.observed_at,
+            )
+            db.add(svc_db)
+            db.flush()
+
+            # Technology detection
+            detected_techs = tech_service.fingerprint_http_observation(obs)
+            tech_summaries: List[TechnologySummaryResponse] = []
+
+            for dt in detected_techs:
+                total_techs_count += 1
+                tech_db = Technology(
+                    asset_id=asset.id,
+                    service_id=svc_db.id,
+                    scan_run_id=scan_run.id,
+                    name=dt.name,
+                    version=dt.version,
+                    cpe=dt.cpe,
+                    category=dt.category,
+                    confidence=dt.confidence,
+                    evidence_source=dt.evidence_source,
+                    detected_at=obs.observed_at,
+                )
+                db.add(tech_db)
+                db.flush()
+
+                tech_summaries.append(
+                    TechnologySummaryResponse(
+                        id=tech_db.id,
+                        asset_id=asset.id,
+                        asset_value=hostname,
+                        service_id=svc_db.id,
+                        scan_run_id=scan_run.id,
+                        name=tech_db.name,
+                        version=tech_db.version,
+                        cpe=tech_db.cpe,
+                        category=tech_db.category,
+                        confidence=tech_db.confidence,
+                        evidence_source=tech_db.evidence_source,
+                        detected_at=tech_db.detected_at,
+                    )
+                )
+
+            # Security Headers Summary
+            sec_headers_dict: Dict[str, SecurityHeaderDetail] = {}
+            for k, v in obs.security_headers.items():
+                sec_headers_dict[k] = SecurityHeaderDetail(
+                    header_name=v.header_name,
+                    present=v.present,
+                    value=v.value,
+                    status=v.status,
+                    interpretation=v.interpretation,
+                )
+            total_headers_analyzed_count += len(sec_headers_dict)
+
+            sec_summary = SecurityHeadersSummaryResponse(
+                service_id=svc_db.id,
+                asset_id=asset.id,
+                asset_value=hostname,
+                url=obs.url,
+                port=port,
+                protocol=protocol,
+                service_name=service_name,
+                http_status=obs.status_code,
+                headers=sec_headers_dict,
+                scan_run_id=scan_run.id,
+                observed_at=obs.observed_at,
+            )
+
+            # TLS Metadata Summary (HTTPS only)
+            tls_summary: Optional[TLSMetadataSummaryResponse] = None
+            if obs.tls_metadata and service_name == "https":
+                total_tls_count += 1
+                tls_summary = TLSMetadataSummaryResponse(
+                    service_id=svc_db.id,
+                    asset_id=asset.id,
+                    asset_value=hostname,
+                    url=obs.url,
+                    tls_version=obs.tls_metadata.tls_version,
+                    cipher_suite=obs.tls_metadata.cipher_suite,
+                    cert_subject=obs.tls_metadata.cert_subject,
+                    cert_issuer=obs.tls_metadata.cert_issuer,
+                    cert_valid_from=obs.tls_metadata.cert_valid_from,
+                    cert_valid_to=obs.tls_metadata.cert_valid_to,
+                    cert_san_list=obs.tls_metadata.cert_san_list,
+                    scan_run_id=scan_run.id,
+                    observed_at=obs.observed_at,
+                )
+
+            results_detail.append(
+                ServiceFingerprintDetail(
+                    service_id=svc_db.id,
+                    asset_id=asset.id,
+                    hostname=hostname,
+                    url=obs.url,
+                    port=port,
+                    service_name=service_name,
+                    is_reachable=True,
+                    status_code=obs.status_code,
+                    page_title=obs.page_title,
+                    technologies_count=len(tech_summaries),
+                    technologies=tech_summaries,
+                    security_headers=sec_summary,
+                    tls_metadata=tls_summary,
+                    error=obs.error,
+                )
+            )
+
+    # 3. Finalize ScanRun
+    scan_run.status = "completed"
+    scan_run.completed_at = datetime.now(timezone.utc)
+    scan_run.total_discovered_assets = reachable_count
+    scan_run.summary = {
+        "operation": "technology_fingerprinting_http_security",
+        "services_processed": services_processed_count,
+        "reachable": reachable_count,
+        "technologies_detected": total_techs_count,
+        "security_headers_analyzed": total_headers_analyzed_count,
+        "tls_observations": total_tls_count,
+    }
+
+    investigation.status = "active"
+    db.commit()
+
+    logger.info(
+        f"Completed Technology & Security Fingerprinting for '{target_domain}' (Inv: {investigation_id}): "
+        f"{services_processed_count} probed, {reachable_count} reachable, "
+        f"{total_techs_count} technologies detected, {total_tls_count} TLS observations."
+    )
+
+    return FingerprintResponse(
+        investigation_id=investigation.id,
+        scan_run_id=scan_run.id,
+        target_domain=target_domain,
+        services_processed=services_processed_count,
+        reachable=reachable_count,
+        technologies_detected=total_techs_count,
+        security_headers_analyzed=total_headers_analyzed_count,
+        tls_observations=total_tls_count,
+        results=results_detail,
+        completed_at=scan_run.completed_at,
+    )
+
+
+@router.get(
+    "/{investigation_id}/technologies",
+    response_model=List[TechnologySummaryResponse],
+    summary="List Observed Technologies for Investigation",
+    description="Returns all point-in-time technology detections for assets under this investigation.",
+)
+def list_investigation_technologies(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[TechnologySummaryResponse]:
+    """Retrieve observed technologies for an investigation, optionally filtered by ScanRun."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    query = (
+        select(Technology)
+        .join(Asset, Technology.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation_id)
+        .order_by(Technology.detected_at.desc())
+    )
+    if scan_run_id:
+        query = query.where(Technology.scan_run_id == scan_run_id)
+
+    technologies = db.execute(query).scalars().all()
+
+    return [
+        TechnologySummaryResponse(
+            id=t.id,
+            asset_id=t.asset_id,
+            asset_value=t.asset.value if t.asset else None,
+            service_id=t.service_id,
+            scan_run_id=t.scan_run_id,
+            name=t.name,
+            version=t.version,
+            cpe=t.cpe,
+            category=t.category,
+            confidence=t.confidence,
+            evidence_source=t.evidence_source,
+            detected_at=t.detected_at,
+        )
+        for t in technologies
+    ]
+
+
+@router.get(
+    "/{investigation_id}/security-headers",
+    response_model=List[SecurityHeadersSummaryResponse],
+    summary="List HTTP Security Headers Observations for Investigation",
+    description="Returns HTTP security header observations across web service exposures for this investigation.",
+)
+def list_investigation_security_headers(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[SecurityHeadersSummaryResponse]:
+    """Retrieve security headers observations for an investigation, optionally filtered by ScanRun."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    query = (
+        select(ServiceExposure)
+        .join(Asset, ServiceExposure.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation_id)
+        .order_by(ServiceExposure.observed_at.desc())
+    )
+    if scan_run_id:
+        query = query.where(ServiceExposure.scan_run_id == scan_run_id)
+
+    services = db.execute(query).scalars().all()
+
+    summaries: List[SecurityHeadersSummaryResponse] = []
+    for svc in services:
+        if not svc.security_headers:
+            continue
+
+        headers_dict: Dict[str, SecurityHeaderDetail] = {}
+        for h_key, h_data in svc.security_headers.items():
+            if isinstance(h_data, dict):
+                headers_dict[h_key] = SecurityHeaderDetail(
+                    header_name=h_data.get("header_name", h_key),
+                    present=h_data.get("present", False),
+                    value=h_data.get("value"),
+                    status=h_data.get("status", "missing"),
+                    interpretation=h_data.get("interpretation", ""),
+                )
+
+        host_val = svc.asset.value if svc.asset else ""
+        proto = svc.service_name or ("https" if svc.port == 443 else "http")
+        url_val = f"{proto}://{host_val}:{svc.port}" if (
+            (proto == "http" and svc.port != 80) or (proto == "https" and svc.port != 443)
+        ) else f"{proto}://{host_val}"
+
+        summaries.append(
+            SecurityHeadersSummaryResponse(
+                service_id=svc.id,
+                asset_id=svc.asset_id,
+                asset_value=host_val,
+                url=url_val,
+                port=svc.port,
+                protocol=svc.protocol,
+                service_name=svc.service_name,
+                http_status=svc.http_status,
+                headers=headers_dict,
+                scan_run_id=svc.scan_run_id,
+                observed_at=svc.observed_at,
+            )
+        )
+
+    return summaries
+
+
+@router.get(
+    "/{investigation_id}/tls-metadata",
+    response_model=List[TLSMetadataSummaryResponse],
+    summary="List TLS Metadata Observations for Investigation",
+    description="Returns TLS versions and certificate metadata for HTTPS services under this investigation.",
+)
+def list_investigation_tls_metadata(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[TLSMetadataSummaryResponse]:
+    """Retrieve TLS metadata observations for HTTPS services in an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    query = (
+        select(ServiceExposure)
+        .join(Asset, ServiceExposure.asset_id == Asset.id)
+        .where(
+            Asset.investigation_id == investigation_id,
+            ServiceExposure.port == 443,
+        )
+        .order_by(ServiceExposure.observed_at.desc())
+    )
+    if scan_run_id:
+        query = query.where(ServiceExposure.scan_run_id == scan_run_id)
+
+    services = db.execute(query).scalars().all()
+
+    summaries: List[TLSMetadataSummaryResponse] = []
+    for svc in services:
+        if not svc.tls_version:
+            continue
+
+        host_val = svc.asset.value if svc.asset else ""
+        url_val = f"https://{host_val}"
+
+        summaries.append(
+            TLSMetadataSummaryResponse(
+                service_id=svc.id,
+                asset_id=svc.asset_id,
+                asset_value=host_val,
+                url=url_val,
+                tls_version=svc.tls_version,
+                cipher_suite=None,
+                cert_subject=None,
+                cert_issuer=None,
+                cert_valid_from=None,
+                cert_valid_to=None,
+                cert_san_list=[],
+                scan_run_id=svc.scan_run_id,
+                observed_at=svc.observed_at,
+            )
+        )
+
+    return summaries
+
 

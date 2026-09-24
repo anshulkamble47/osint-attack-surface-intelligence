@@ -284,3 +284,98 @@ class IPEnrichmentResponse(BaseModel):
         "ASN and RDAP registration observations persisted and linked with ScanRun."
     )
 
+
+class TechnologySummaryResponse(BaseModel):
+    """Detected technology fingerprint response schema."""
+    id: uuid.UUID
+    asset_id: uuid.UUID
+    asset_value: Optional[str] = None
+    service_id: Optional[uuid.UUID] = None
+    scan_run_id: Optional[uuid.UUID] = None
+    name: str
+    version: Optional[str] = None
+    cpe: Optional[str] = None
+    category: str
+    confidence: float = 0.8
+    evidence_source: str
+    detected_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SecurityHeaderDetail(BaseModel):
+    """Individual security header analysis details."""
+    header_name: str
+    present: bool
+    value: Optional[str] = None
+    status: str  # configured, missing, custom, not_applicable
+    interpretation: str
+
+
+class SecurityHeadersSummaryResponse(BaseModel):
+    """HTTP security headers assessment summary for a web service."""
+    service_id: uuid.UUID
+    asset_id: uuid.UUID
+    asset_value: str
+    url: str
+    port: int
+    protocol: str = "tcp"
+    service_name: str = "http"
+    http_status: Optional[int] = None
+    headers: Dict[str, SecurityHeaderDetail] = Field(default_factory=dict)
+    scan_run_id: Optional[uuid.UUID] = None
+    observed_at: datetime
+
+
+class TLSMetadataSummaryResponse(BaseModel):
+    """Observed TLS configuration and certificate metadata for HTTPS services."""
+    service_id: uuid.UUID
+    asset_id: uuid.UUID
+    asset_value: str
+    url: str
+    tls_version: Optional[str] = None
+    cipher_suite: Optional[str] = None
+    cert_subject: Optional[str] = None
+    cert_issuer: Optional[str] = None
+    cert_valid_from: Optional[datetime] = None
+    cert_valid_to: Optional[datetime] = None
+    cert_san_list: List[str] = Field(default_factory=list)
+    scan_run_id: Optional[uuid.UUID] = None
+    observed_at: datetime
+
+
+class ServiceFingerprintDetail(BaseModel):
+    """Technology and security fingerprinting result for an individual service."""
+    service_id: uuid.UUID
+    asset_id: uuid.UUID
+    hostname: str
+    url: str
+    port: int
+    service_name: str
+    is_reachable: bool
+    status_code: Optional[int] = None
+    page_title: Optional[str] = None
+    technologies_count: int = 0
+    technologies: List[TechnologySummaryResponse] = Field(default_factory=list)
+    security_headers: Optional[SecurityHeadersSummaryResponse] = None
+    tls_metadata: Optional[TLSMetadataSummaryResponse] = None
+    error: Optional[str] = None
+
+
+class FingerprintResponse(BaseModel):
+    """Structured response returned by Technology Fingerprinting & HTTP Security Intelligence (Stage 5)."""
+    investigation_id: uuid.UUID
+    scan_run_id: uuid.UUID
+    target_domain: str
+    services_processed: int
+    reachable: int
+    technologies_detected: int
+    security_headers_analyzed: int
+    tls_observations: int
+    results: List[ServiceFingerprintDetail] = Field(default_factory=list)
+    completed_at: datetime
+    note: str = (
+        "Technology fingerprinting and passive HTTP security intelligence completed. "
+        "Observations persisted and linked with ScanRun."
+    )
+
