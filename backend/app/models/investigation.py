@@ -188,6 +188,13 @@ class ScanRun(Base):
         back_populates="scan_run",
         cascade="all, delete-orphan",
     )
+    asset_relationships = relationship(
+        "AssetRelationship",
+        foreign_keys="AssetRelationship.scan_run_id",
+        back_populates="scan_run",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self) -> str:
         return f"<ScanRun run={self.run_number} status={self.status}>"
+

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
 
@@ -43,6 +43,7 @@ from backend.app.schemas.investigation import (
     VulnerabilityCorrelationDetail,
     CorrelateVulnerabilitiesResponse,
 )
+from backend.app.schemas.graph import GraphResponse
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
 from backend.app.services.reachability_service import ReachabilityService
@@ -52,6 +53,8 @@ from backend.app.services.rdap_service import RDAPService
 from backend.app.services.http_service import HTTPIntelligenceService
 from backend.app.services.technology_service import TechnologyService
 from backend.app.services.vulnerability_service import VulnerabilityService
+from backend.app.services.correlation_service import CorrelationService
+
 
 
 def get_ct_service() -> CTService:
@@ -99,8 +102,13 @@ def get_vulnerability_service() -> VulnerabilityService:
     return VulnerabilityService()
 
 
+def get_correlation_service() -> CorrelationService:
+    """Dependency provider returning CorrelationService instance."""
+    return CorrelationService()
+
 
 router = APIRouter(prefix="/investigations", tags=["Investigations & OSINT Discovery"])
+
 
 
 def _check_investigation_access(investigation: Investigation, user: User) -> None:
@@ -2073,6 +2081,60 @@ def list_investigation_vulnerabilities(
         )
 
     return items
+
+
+@router.get(
+    "/{investigation_id}/graph",
+    response_model=GraphResponse,
+    summary="Get Attack Surface Relationship Graph",
+    description="Retrieves the deterministic, scan-isolated attack surface graph with optional node and relationship type filtering.",
+)
+def get_investigation_graph(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    node_type: Optional[List[str]] = Query(None),
+    relationship_type: Optional[List[str]] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    correlation_service: CorrelationService = Depends(get_correlation_service),
+) -> GraphResponse:
+    """Retrieve the Attack Surface Relationship Graph for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    if scan_run_id:
+        scan_run = db.get(ScanRun, scan_run_id)
+        if not scan_run:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scan run not found",
+            )
+        if scan_run.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scan run does not belong to this investigation",
+            )
+
+    try:
+        return correlation_service.build_investigation_graph(
+            db=db,
+            investigation_id=investigation_id,
+            scan_run_id=scan_run_id,
+            node_types=node_type,
+            relationship_types=relationship_type,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
 
 
 

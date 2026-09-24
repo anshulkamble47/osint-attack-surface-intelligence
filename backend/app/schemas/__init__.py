@@ -34,6 +34,12 @@ from backend.app.schemas.investigation import (
     VulnerabilityCorrelationDetail,
     CorrelateVulnerabilitiesResponse,
 )
+from backend.app.schemas.graph import (
+    GraphNode,
+    GraphEdge,
+    GraphStatistics,
+    GraphResponse,
+)
 
 __all__ = [
     "UserRole",
@@ -66,5 +72,10 @@ __all__ = [
     "KEVDetailResponse",
     "VulnerabilityCorrelationDetail",
     "CorrelateVulnerabilitiesResponse",
+    "GraphNode",
+    "GraphEdge",
+    "GraphStatistics",
+    "GraphResponse",
 ]
+
 

@@ -17,7 +17,9 @@ import {
   TLSMetadataSummary,
   CorrelateVulnerabilitiesResponse,
   VulnerabilityCorrelationDetail,
+  GraphResponse,
 } from '../types/api';
+
 
 const API_BASE = '/api';
 
@@ -247,6 +249,28 @@ export async function listInvestigationVulnerabilities(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function getInvestigationGraph(
+  token: string,
+  investigationId: string,
+  scanRunId?: string,
+  nodeTypes?: string[],
+  relationshipTypes?: string[]
+): Promise<GraphResponse> {
+  const params = new URLSearchParams();
+  if (scanRunId) params.append('scan_run_id', scanRunId);
+  if (nodeTypes && nodeTypes.length > 0) {
+    nodeTypes.forEach(nt => params.append('node_type', nt));
+  }
+  if (relationshipTypes && relationshipTypes.length > 0) {
+    relationshipTypes.forEach(rt => params.append('relationship_type', rt));
+  }
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return request<GraphResponse>(`/investigations/${investigationId}/graph${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 
 
 

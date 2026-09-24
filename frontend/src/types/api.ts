@@ -327,5 +327,43 @@ export interface CorrelateVulnerabilitiesResponse {
   note: string;
 }
 
+export interface GraphNode {
+  id: string;
+  type: string;
+  label: string;
+  asset_id?: string | null;
+  entity_id?: string | null;
+  metadata: Record<string, any>;
+}
+
+export interface GraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  relationship_type: string;
+  scan_run_id?: string | null;
+  evidence_id?: string | null;
+  confidence: number;
+  attributes: Record<string, any>;
+}
+
+export interface GraphStatistics {
+  node_count: number;
+  edge_count: number;
+  nodes_by_type: Record<string, number>;
+  edges_by_type: Record<string, number>;
+}
+
+export interface GraphResponse {
+  investigation_id: string;
+  scan_run_id?: string | null;
+  scan_run_number?: number | null;
+  target_domain: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  statistics: GraphStatistics;
+}
+
+
 
 

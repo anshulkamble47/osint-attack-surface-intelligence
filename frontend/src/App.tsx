@@ -18,6 +18,10 @@ import {
   Code2,
   AlertTriangle,
   Flame,
+  Share2,
+  GitFork,
+  Eye,
+  Filter,
 } from 'lucide-react';
 
 import { 
@@ -40,6 +44,7 @@ import {
   listInvestigationTLSMetadata,
   correlateInvestigationVulnerabilities,
   listInvestigationVulnerabilities,
+  getInvestigationGraph,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -59,7 +64,11 @@ import {
   TLSMetadataSummary,
   CorrelateVulnerabilitiesResponse,
   VulnerabilityCorrelationDetail,
+  GraphResponse,
+  GraphNode,
 } from './types/api';
+
+
 
 export const App: React.FC = () => {
   // System Health
@@ -123,6 +132,14 @@ export const App: React.FC = () => {
   const [vulnError, setVulnError] = useState<string | null>(null);
   const [filterKevOnly, setFilterKevOnly] = useState(false);
 
+  // Stage 7 Attack Surface Graph & Correlation State
+  const [runningGraph, setRunningGraph] = useState(false);
+  const [graphData, setGraphData] = useState<GraphResponse | null>(null);
+  const [graphError, setGraphError] = useState<string | null>(null);
+  const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
+  const [filterNodeType, setFilterNodeType] = useState<string>('ALL');
+  const [filterRelType, setFilterRelType] = useState<string>('ALL');
+
   // Probe health
   const checkHealth = useCallback(async () => {
     try {
@@ -156,7 +173,32 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, and vulnerabilities
+  // Handle Load Graph
+  const handleLoadGraph = useCallback(async () => {
+    if (!token || !selectedInv) return;
+    setRunningGraph(true);
+    setGraphError(null);
+    try {
+      const nodeTypes = filterNodeType !== 'ALL' ? [filterNodeType.toLowerCase()] : undefined;
+      const relTypes = filterRelType !== 'ALL' ? [filterRelType.toUpperCase()] : undefined;
+      const res = await getInvestigationGraph(token, selectedInv.id, undefined, nodeTypes, relTypes);
+      setGraphData(res);
+      if (res.nodes.length > 0) {
+        setSelectedGraphNode(prev => {
+          if (prev && res.nodes.some(n => n.id === prev.id)) {
+            return res.nodes.find(n => n.id === prev.id) || res.nodes[0];
+          }
+          return res.nodes[0];
+        });
+      }
+    } catch (err: any) {
+      setGraphError(err.message || 'Failed to load attack surface graph');
+    } finally {
+      setRunningGraph(false);
+    }
+  }, [token, selectedInv, filterNodeType, filterRelType]);
+
+  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, vulnerabilities, and graph
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
@@ -186,8 +228,10 @@ export const App: React.FC = () => {
       listInvestigationVulnerabilities(token, selectedInv.id)
         .then(setVulnerabilities)
         .catch(console.error);
+      handleLoadGraph();
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph]);
+
 
 
   // Handle Login
@@ -248,6 +292,9 @@ export const App: React.FC = () => {
     setTLSMetadata([]);
     setVulnResult(null);
     setVulnerabilities([]);
+    setGraphData(null);
+    setSelectedGraphNode(null);
+    setGraphError(null);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -273,7 +320,11 @@ export const App: React.FC = () => {
       setSecurityHeaders([]);
       setTLSMetadata([]);
       setVulnerabilities([]);
+      setGraphData(null);
+      setSelectedGraphNode(null);
+      setGraphError(null);
       setInvName('');
+
       setInvDomain('');
       setInvOrg('');
     } catch (err: any) {
@@ -1385,6 +1436,328 @@ export const App: React.FC = () => {
                   </div>
                 )}
 
+                {/* 6. Attack Surface Relationship Graph & Correlation Section */}
+                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid #a855f7' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ background: 'rgba(168, 85, 247, 0.15)', padding: '0.6rem', borderRadius: '10px', color: '#c084fc' }}>
+                        <Share2 size={22} />
+                      </div>
+                      <div>
+                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          6. Attack Surface Relationship Graph & Correlation
+                        </h2>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          Deterministic, scan-isolated correlation connecting Domains, Subdomains, IPs, ASNs, Services, Tech, and CVEs
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Filter size={14} color="var(--text-muted)" />
+                        <select
+                          className="input"
+                          value={filterNodeType}
+                          onChange={e => setFilterNodeType(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Node Types</option>
+                          <option value="domain">Domain</option>
+                          <option value="subdomain">Subdomain</option>
+                          <option value="ip">IP Address</option>
+                          <option value="asn">ASN</option>
+                          <option value="service">Service Exposure</option>
+                          <option value="technology">Technology</option>
+                          <option value="vulnerability">Vulnerability</option>
+                          <option value="certificate">Certificate</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <select
+                          className="input"
+                          value={filterRelType}
+                          onChange={e => setFilterRelType(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Relationships</option>
+                          <option value="CONTAINS">CONTAINS</option>
+                          <option value="RESOLVES_TO">RESOLVES_TO</option>
+                          <option value="ANNOUNCED_BY">ANNOUNCED_BY</option>
+                          <option value="EXPOSES">EXPOSES</option>
+                          <option value="USES_TECHNOLOGY">USES_TECHNOLOGY</option>
+                          <option value="AFFECTED_BY">AFFECTED_BY</option>
+                          <option value="HAS_CERTIFICATE">HAS_CERTIFICATE</option>
+                        </select>
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleLoadGraph}
+                        disabled={runningGraph || !selectedInv}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #9333ea, #a855f7)' }}
+                      >
+                        <Share2 size={16} className={runningGraph ? 'animate-spin' : ''} />
+                        {runningGraph ? 'Correlating...' : 'Build / Refresh Graph'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {graphError && (
+                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <XCircle size={16} />
+                      <span>{graphError}</span>
+                    </div>
+                  )}
+
+                  {graphData && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+                      {/* Summary Statistics Strip */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
+                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Graph Nodes</div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#c084fc', marginTop: '0.2rem' }}>
+                            {graphData.statistics.node_count}
+                          </div>
+                        </div>
+
+                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Edges</div>
+                          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--cyan-400)', marginTop: '0.2rem' }}>
+                            {graphData.statistics.edge_count}
+                          </div>
+                        </div>
+
+                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Scan Attribution</div>
+                          <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--emerald-400)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
+                            {graphData.scan_run_number ? `Run #${graphData.scan_run_number}` : 'Latest Snapshot'}
+                          </div>
+                        </div>
+
+                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Target Domain</div>
+                          <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
+                            {graphData.target_domain}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Type Badges Breakdown */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Nodes by Type:</span>
+                        {Object.entries(graphData.statistics.nodes_by_type).map(([type, count]) => (
+                          <span
+                            key={type}
+                            className="badge badge-neutral"
+                            style={{ fontSize: '0.75rem', cursor: 'pointer' }}
+                            onClick={() => setFilterNodeType(type)}
+                          >
+                            <span style={{ textTransform: 'capitalize', color: 'var(--cyan-400)' }}>{type}</span>: {count}
+                          </span>
+                        ))}
+
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, marginLeft: '0.5rem' }}>Edges:</span>
+                        {Object.entries(graphData.statistics.edges_by_type).map(([rel, count]) => (
+                          <span
+                            key={rel}
+                            className="badge badge-neutral"
+                            style={{ fontSize: '0.75rem', cursor: 'pointer' }}
+                            onClick={() => setFilterRelType(rel)}
+                          >
+                            <span style={{ color: '#c084fc' }}>{rel}</span>: {count}
+                          </span>
+                        ))}
+                      </div>
+
+                      {/* Graph Explorer & Inspector */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: '1rem', alignItems: 'start' }}>
+                        {/* Left: Nodes & Edges Explorer */}
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                          {/* Nodes Explorer */}
+                          <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                              <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                Graph Nodes ({graphData.nodes.length})
+                              </h4>
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click node to inspect metadata</span>
+                            </div>
+
+                            <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                              {graphData.nodes.map(node => {
+                                const isSelected = selectedGraphNode?.id === node.id;
+                                const typeColor =
+                                  node.type === 'domain' ? 'var(--cyan-400)' :
+                                  node.type === 'subdomain' ? 'var(--blue-400)' :
+                                  node.type === 'ip' ? 'var(--emerald-400)' :
+                                  node.type === 'asn' ? '#fbbf24' :
+                                  node.type === 'service' ? '#38bdf8' :
+                                  node.type === 'technology' ? '#a78bfa' :
+                                  node.type === 'vulnerability' ? 'var(--rose-400)' :
+                                  '#f472b6';
+
+                                return (
+                                  <div
+                                    key={node.id}
+                                    onClick={() => setSelectedGraphNode(node)}
+                                    style={{
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'space-between',
+                                      padding: '0.5rem 0.75rem',
+                                      borderRadius: '6px',
+                                      background: isSelected ? 'rgba(168, 85, 247, 0.2)' : 'rgba(30, 41, 59, 0.5)',
+                                      border: isSelected ? '1px solid #a855f7' : '1px solid var(--border-subtle)',
+                                      cursor: 'pointer',
+                                      transition: 'all 0.15s ease',
+                                    }}
+                                  >
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
+                                      <span
+                                        className="badge"
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          background: 'rgba(0,0,0,0.3)',
+                                          color: typeColor,
+                                          border: `1px solid ${typeColor}`,
+                                          padding: '0.1rem 0.4rem',
+                                        }}
+                                      >
+                                        {node.type.toUpperCase()}
+                                      </span>
+                                      <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                        {node.label}
+                                      </span>
+                                    </div>
+                                    <Eye size={14} color={isSelected ? '#c084fc' : 'var(--text-muted)'} />
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {/* Relationships / Edges Explorer */}
+                          <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                              <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                                Correlated Edges ({graphData.edges.length})
+                              </h4>
+                            </div>
+
+                            <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
+                              <table className="table" style={{ fontSize: '0.8rem' }}>
+                                <thead>
+                                  <tr>
+                                    <th>Source</th>
+                                    <th>Relationship</th>
+                                    <th>Target</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {graphData.edges.map(edge => (
+                                    <tr key={edge.id}>
+                                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                        {edge.source}
+                                      </td>
+                                      <td>
+                                        <span
+                                          className="badge"
+                                          style={{
+                                            fontSize: '0.65rem',
+                                            background: 'rgba(168, 85, 247, 0.15)',
+                                            color: '#c084fc',
+                                            border: '1px solid rgba(168, 85, 247, 0.3)',
+                                            fontFamily: 'var(--font-mono)',
+                                          }}
+                                        >
+                                          {edge.relationship_type}
+                                        </span>
+                                      </td>
+                                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--cyan-400)' }}>
+                                        {edge.target}
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Right: Selected Node Inspector Panel */}
+                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
+                            <GitFork size={18} color="#c084fc" />
+                            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                              Node Inspector
+                            </h4>
+                          </div>
+
+                          {selectedGraphNode ? (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Node Identifier</div>
+                                <div style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', color: '#c084fc', wordBreak: 'break-all' }}>
+                                  {selectedGraphNode.id}
+                                </div>
+                              </div>
+
+                              <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                                <div>
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Type</div>
+                                  <span className="badge badge-info" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
+                                    {selectedGraphNode.type.toUpperCase()}
+                                  </span>
+                                </div>
+                                {selectedGraphNode.asset_id && (
+                                  <div>
+                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Asset UUID</div>
+                                    <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                                      {selectedGraphNode.asset_id}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Display Label</div>
+                                <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+                                  {selectedGraphNode.label}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>Node Metadata</div>
+                                <pre
+                                  style={{
+                                    background: 'rgba(0, 0, 0, 0.4)',
+                                    padding: '0.75rem',
+                                    borderRadius: '6px',
+                                    fontSize: '0.75rem',
+                                    fontFamily: 'var(--font-mono)',
+                                    color: 'var(--text-secondary)',
+                                    maxHeight: '300px',
+                                    overflowY: 'auto',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {JSON.stringify(selectedGraphNode.metadata, null, 2)}
+                                </pre>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2rem 0' }}>
+                              Select a node from the list to view its deterministic attributes.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Discovered Certificates Section (if CT discovery ran) */}
                 {ctResult && ctResult.certificates.length > 0 && (
                   <div className="glass-panel" style={{ padding: '1.25rem' }}>
@@ -1436,6 +1809,7 @@ export const App: React.FC = () => {
                     </div>
                   </div>
                 )}
+
               </>
             ) : (
               <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
