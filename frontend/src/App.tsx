@@ -16,6 +16,8 @@ import {
   Cpu,
   ShieldCheck,
   Code2,
+  AlertTriangle,
+  Flame,
 } from 'lucide-react';
 
 import { 
@@ -36,6 +38,8 @@ import {
   listInvestigationTechnologies,
   listInvestigationSecurityHeaders,
   listInvestigationTLSMetadata,
+  correlateInvestigationVulnerabilities,
+  listInvestigationVulnerabilities,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -53,6 +57,8 @@ import {
   TechnologySummary,
   SecurityHeadersSummary,
   TLSMetadataSummary,
+  CorrelateVulnerabilitiesResponse,
+  VulnerabilityCorrelationDetail,
 } from './types/api';
 
 export const App: React.FC = () => {
@@ -110,6 +116,13 @@ export const App: React.FC = () => {
   const [tlsMetadata, setTLSMetadata] = useState<TLSMetadataSummary[]>([]);
   const [fingerprintError, setFingerprintError] = useState<string | null>(null);
 
+  // Stage 6 Vulnerability Intelligence & CVE Correlation State
+  const [runningVulnCorrelate, setRunningVulnCorrelate] = useState(false);
+  const [vulnResult, setVulnResult] = useState<CorrelateVulnerabilitiesResponse | null>(null);
+  const [vulnerabilities, setVulnerabilities] = useState<VulnerabilityCorrelationDetail[]>([]);
+  const [vulnError, setVulnError] = useState<string | null>(null);
+  const [filterKevOnly, setFilterKevOnly] = useState(false);
+
   // Probe health
   const checkHealth = useCallback(async () => {
     try {
@@ -143,7 +156,7 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load assets, DNS records, services, IP addresses, ASNs, technologies, and security observations
+  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, and vulnerabilities
   useEffect(() => {
     if (token && selectedInv) {
       listInvestigationAssets(token, selectedInv.id)
@@ -170,8 +183,11 @@ export const App: React.FC = () => {
       listInvestigationTLSMetadata(token, selectedInv.id)
         .then(setTLSMetadata)
         .catch(console.error);
+      listInvestigationVulnerabilities(token, selectedInv.id)
+        .then(setVulnerabilities)
+        .catch(console.error);
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult]);
 
 
   // Handle Login
@@ -230,6 +246,8 @@ export const App: React.FC = () => {
     setTechnologies([]);
     setSecurityHeaders([]);
     setTLSMetadata([]);
+    setVulnResult(null);
+    setVulnerabilities([]);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -248,11 +266,13 @@ export const App: React.FC = () => {
       setResolveResult(null);
       setIPEnrichResult(null);
       setFingerprintResult(null);
+      setVulnResult(null);
       setIPAddresses([]);
       setASNs([]);
       setTechnologies([]);
       setSecurityHeaders([]);
       setTLSMetadata([]);
+      setVulnerabilities([]);
       setInvName('');
       setInvDomain('');
       setInvOrg('');
@@ -348,6 +368,23 @@ export const App: React.FC = () => {
       setFingerprintError(err.message || 'Technology & Security Fingerprinting failed');
     } finally {
       setRunningFingerprint(false);
+    }
+  };
+
+  // Handle Run Vulnerability Intelligence & CVE Correlation (Stage 6)
+  const handleRunVulnCorrelate = async () => {
+    if (!token || !selectedInv) return;
+    setRunningVulnCorrelate(true);
+    setVulnError(null);
+    try {
+      const res = await correlateInvestigationVulnerabilities(token, selectedInv.id);
+      setVulnResult(res);
+      const updatedVulns = await listInvestigationVulnerabilities(token, selectedInv.id);
+      setVulnerabilities(updatedVulns);
+    } catch (err: any) {
+      setVulnError(err.message || 'Vulnerability intelligence & CVE correlation failed');
+    } finally {
+      setRunningVulnCorrelate(false);
     }
   };
 
@@ -611,11 +648,21 @@ export const App: React.FC = () => {
                       <button
                         onClick={handleRunFingerprint}
                         disabled={runningFingerprint || runningIPEnrich || runningResolve || runningCT || assets.length === 0}
-                        className="btn btn-primary"
+                        className="btn btn-secondary"
                         style={{ padding: '0.65rem 1.25rem' }}
                       >
                         <Cpu size={15} className={runningFingerprint ? 'spin' : ''} style={{ animation: runningFingerprint ? 'spin 1s linear infinite' : 'none' }} />
                         <span>{runningFingerprint ? 'Fingerprinting Web Services...' : '4. Technology & Security'}</span>
+                      </button>
+
+                      <button
+                        onClick={handleRunVulnCorrelate}
+                        disabled={runningVulnCorrelate || runningFingerprint || runningIPEnrich || runningResolve || runningCT || technologies.length === 0}
+                        className="btn btn-primary"
+                        style={{ padding: '0.65rem 1.25rem' }}
+                      >
+                        <Flame size={15} className={runningVulnCorrelate ? 'spin' : ''} style={{ animation: runningVulnCorrelate ? 'spin 1s linear infinite' : 'none' }} />
+                        <span>{runningVulnCorrelate ? 'Correlating CVEs & KEV...' : '5. Vulnerability Intelligence'}</span>
                       </button>
                     </div>
                   </div>
@@ -624,6 +671,7 @@ export const App: React.FC = () => {
                   {resolveError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{resolveError}</div>}
                   {ipEnrichError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ipEnrichError}</div>}
                   {fingerprintError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{fingerprintError}</div>}
+                  {vulnError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{vulnError}</div>}
                 </div>
 
                 {/* DNS & Reachability Metrics Grid (if resolution executed) */}
@@ -704,6 +752,32 @@ export const App: React.FC = () => {
                     <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
                       <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>TLS Sessions</div>
                       <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{fingerprintResult.tls_observations}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Stage 6 Vulnerability Intelligence & CVE Correlation Metrics Grid */}
+                {vulnResult && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Techs Analyzed</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{vulnResult.technologies_analyzed}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>CVEs Correlated</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{vulnResult.cves_correlated}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Potential Matches</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{vulnResult.potential_matches}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--red-400)' }}>CISA KEV Listed</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--red-400)' }}>{vulnResult.kev_listed_cves}</div>
+                    </div>
+                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>Requires Verification</div>
+                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{vulnResult.requires_verification}</div>
                     </div>
                   </div>
                 )}
@@ -1146,6 +1220,165 @@ export const App: React.FC = () => {
                               </td>
                             </tr>
                           ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+
+                {/* Vulnerability Intelligence & CVE Correlation Section (Stage 6) */}
+                {vulnerabilities.length > 0 && (
+                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Flame size={18} color="var(--cyan-400)" />
+                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
+                          Vulnerability Intelligence & CVE Correlation ({vulnerabilities.length})
+                        </h3>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
+                          <input
+                            type="checkbox"
+                            checked={filterKevOnly}
+                            onChange={e => setFilterKevOnly(e.target.checked)}
+                          />
+                          <span style={{ color: filterKevOnly ? 'var(--red-400)' : 'inherit', fontWeight: filterKevOnly ? 600 : 400 }}>
+                            CISA KEV Listed Only ({vulnerabilities.filter(v => v.is_kev).length})
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Passive Correlation Disclaimer Alert */}
+                    <div style={{
+                      background: 'rgba(30, 41, 59, 0.6)',
+                      border: '1px solid rgba(56, 189, 248, 0.25)',
+                      borderRadius: '8px',
+                      padding: '0.75rem 1rem',
+                      marginBottom: '1rem',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.75rem',
+                      fontSize: '0.8rem',
+                      color: 'var(--text-secondary)'
+                    }}>
+                      <AlertTriangle size={18} color="var(--amber-400)" style={{ flexShrink: 0 }} />
+                      <div>
+                        <strong style={{ color: 'var(--text-primary)' }}>Passive Intelligence Disclaimer: </strong>
+                        Correlated CVEs represent potential vulnerabilities based on passive technology fingerprinting and CPE/version mapping. These matches do not constitute proof of active exploitability or confirmed compromise. Verification is required.
+                      </div>
+                    </div>
+
+                    <div style={{ overflowX: 'auto', maxHeight: '420px' }}>
+                      <table className="data-table">
+                        <thead>
+                          <tr>
+                            <th>CVE ID</th>
+                            <th>Observed Technology</th>
+                            <th>Observed Version</th>
+                            <th>Severity / CVSS</th>
+                            <th>CISA KEV</th>
+                            <th>Correlation Status</th>
+                            <th>Match Basis & CPE</th>
+                            <th>Intelligence Source</th>
+                            <th>Published</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {vulnerabilities
+                            .filter(v => !filterKevOnly || v.is_kev)
+                            .map((v, idx) => (
+                              <tr key={idx}>
+                                <td>
+                                  <a
+                                    href={`https://nvd.nist.gov/vuln/detail/${v.cve_id}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{
+                                      fontWeight: 700,
+                                      fontFamily: 'var(--font-mono)',
+                                      color: 'var(--cyan-400)',
+                                      textDecoration: 'none'
+                                    }}
+                                  >
+                                    {v.cve_id}
+                                  </a>
+                                </td>
+                                <td style={{ fontWeight: 600 }}>
+                                  {v.technology_name}
+                                </td>
+                                <td>
+                                  {v.observed_version ? (
+                                    <span className="badge badge-success font-mono" style={{ fontSize: '0.75rem' }}>
+                                      {v.observed_version}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Unspecified</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {v.severity ? (
+                                    <span
+                                      className={`badge ${
+                                        v.severity === 'CRITICAL' ? 'badge-danger' :
+                                        v.severity === 'HIGH' ? 'badge-danger' :
+                                        v.severity === 'MEDIUM' ? 'badge-warning' : 'badge-neutral'
+                                      }`}
+                                      style={{ fontSize: '0.7rem' }}
+                                    >
+                                      {v.severity} {v.cvss_score ? `(${v.cvss_score})` : ''}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>N/A</span>
+                                  )}
+                                </td>
+                                <td>
+                                  {v.is_kev ? (
+                                    <span
+                                      className="badge badge-danger"
+                                      style={{
+                                        fontSize: '0.7rem',
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: '0.25rem',
+                                        fontWeight: 700
+                                      }}
+                                      title={v.kev_details ? `Required Action: ${v.kev_details.required_action || 'N/A'}` : 'Listed in CISA KEV'}
+                                    >
+                                      <Flame size={12} /> KEV Listed
+                                      {v.kev_details?.ransomware_campaign === 'Known' && ' (Ransomware)'}
+                                    </span>
+                                  ) : (
+                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>No</span>
+                                  )}
+                                </td>
+                                <td>
+                                  <span
+                                    className={`badge ${
+                                      v.correlation_status === 'POTENTIAL_MATCH' ? 'badge-warning' :
+                                      v.correlation_status === 'REQUIRES_VERIFICATION' ? 'badge-neutral' :
+                                      'badge-info'
+                                    }`}
+                                    style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}
+                                  >
+                                    {v.correlation_status}
+                                  </span>
+                                </td>
+                                <td style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.match_basis || ''}>
+                                  {v.match_basis || '—'}
+                                </td>
+                                <td>
+                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                                    {v.source}
+                                  </span>
+                                </td>
+                                <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                                  {v.published_date ? new Date(v.published_date).toLocaleDateString() : '—'}
+                                </td>
+                              </tr>
+                            ))}
                         </tbody>
                       </table>
                     </div>

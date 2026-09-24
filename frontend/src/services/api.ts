@@ -15,6 +15,8 @@ import {
   TechnologySummary,
   SecurityHeadersSummary,
   TLSMetadataSummary,
+  CorrelateVulnerabilitiesResponse,
+  VulnerabilityCorrelationDetail,
 } from '../types/api';
 
 const API_BASE = '/api';
@@ -218,5 +220,33 @@ export async function listInvestigationTLSMetadata(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function correlateInvestigationVulnerabilities(
+  token: string,
+  investigationId: string
+): Promise<CorrelateVulnerabilitiesResponse> {
+  return request<CorrelateVulnerabilitiesResponse>(`/investigations/${investigationId}/vulnerabilities/correlate`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationVulnerabilities(
+  token: string,
+  investigationId: string,
+  scanRunId?: string,
+  isKev?: boolean,
+  verificationStatus?: string
+): Promise<VulnerabilityCorrelationDetail[]> {
+  const params = new URLSearchParams();
+  if (scanRunId) params.append('scan_run_id', scanRunId);
+  if (isKev !== undefined) params.append('is_kev', String(isKev));
+  if (verificationStatus) params.append('verification_status', verificationStatus);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return request<VulnerabilityCorrelationDetail[]>(`/investigations/${investigationId}/vulnerabilities${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 
 

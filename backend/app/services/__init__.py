@@ -46,6 +46,20 @@ from backend.app.services.technology_service import (
     DetectedTechnology,
     TechnologySignature,
 )
+from backend.app.services.nvd_service import (
+    NVDService,
+    CVEMetadata,
+    VersionConstraint,
+)
+from backend.app.services.kev_service import (
+    CISAKEVService,
+    KEVEntry,
+)
+from backend.app.services.vulnerability_service import (
+    VulnerabilityService,
+    CorrelationStatus,
+    CorrelatedVulnerability,
+)
 
 __all__ = [
     "CTService",
@@ -77,6 +91,14 @@ __all__ = [
     "TechnologyFingerprintProvider",
     "DetectedTechnology",
     "TechnologySignature",
+    "NVDService",
+    "CVEMetadata",
+    "VersionConstraint",
+    "CISAKEVService",
+    "KEVEntry",
+    "VulnerabilityService",
+    "CorrelationStatus",
+    "CorrelatedVulnerability",
 ]
 
 

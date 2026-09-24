@@ -14,7 +14,8 @@ from backend.app.models.user import User
 from backend.app.models.investigation import Target, Investigation, ScanRun
 from backend.app.models.asset import Asset, Domain, Subdomain, DNSRecord, ServiceExposure, IPAddress, ASN, IPObservation
 from backend.app.models.certificate import Certificate, subdomain_certificates
-from backend.app.models.technology import Technology
+from backend.app.models.technology import Technology, TechnologyVulnerability
+from backend.app.models.vulnerability import Vulnerability
 from backend.app.models.evidence import Evidence
 from backend.app.schemas.investigation import (
     InvestigationCreateRequest,
@@ -38,6 +39,9 @@ from backend.app.schemas.investigation import (
     TLSMetadataSummaryResponse,
     ServiceFingerprintDetail,
     FingerprintResponse,
+    KEVDetailResponse,
+    VulnerabilityCorrelationDetail,
+    CorrelateVulnerabilitiesResponse,
 )
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
@@ -47,6 +51,7 @@ from backend.app.services.asn_service import ASNService
 from backend.app.services.rdap_service import RDAPService
 from backend.app.services.http_service import HTTPIntelligenceService
 from backend.app.services.technology_service import TechnologyService
+from backend.app.services.vulnerability_service import VulnerabilityService
 
 
 def get_ct_service() -> CTService:
@@ -87,6 +92,11 @@ def get_http_intelligence_service() -> HTTPIntelligenceService:
 def get_technology_service() -> TechnologyService:
     """Dependency provider returning TechnologyService instance."""
     return TechnologyService()
+
+
+def get_vulnerability_service() -> VulnerabilityService:
+    """Dependency provider returning VulnerabilityService instance."""
+    return VulnerabilityService()
 
 
 
@@ -1795,5 +1805,274 @@ def list_investigation_tls_metadata(
         )
 
     return summaries
+
+
+@router.post(
+    "/{investigation_id}/vulnerabilities/correlate",
+    response_model=CorrelateVulnerabilitiesResponse,
+    summary="Correlate Technologies with Vulnerability & CVE Intelligence",
+    description=(
+        "Correlates detected technologies and versions with NVD CVE advisories and CISA KEV catalog. "
+        "Matches are marked as potential matches requiring verification."
+    ),
+)
+def correlate_investigation_vulnerabilities(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    vuln_service: VulnerabilityService = Depends(get_vulnerability_service),
+) -> CorrelateVulnerabilitiesResponse:
+    """Execute Stage 6 Vulnerability Intelligence & CVE Correlation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    target = investigation.target
+    if not target:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target associated with investigation not found",
+        )
+
+    target_domain = target.primary_domain
+    now_utc = datetime.now(timezone.utc)
+
+    # 1. Start a new ScanRun for this vulnerability intelligence correlation
+    scan_run_count = db.execute(
+        select(func.count(ScanRun.id)).where(ScanRun.investigation_id == investigation.id)
+    ).scalar() or 0
+
+    scan_run = ScanRun(
+        investigation_id=investigation.id,
+        run_number=scan_run_count + 1,
+        status="running",
+        started_at=now_utc,
+    )
+    db.add(scan_run)
+    db.flush()
+
+    # 2. Execute correlation across observed technologies
+    correlations = vuln_service.correlate_investigation_technologies(
+        investigation_id=investigation_id,
+        db=db,
+        scan_run=scan_run,
+    )
+
+    # 3. Compile summary metrics
+    tech_count = db.execute(
+        select(func.count(Technology.id))
+        .join(Asset, Technology.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation_id)
+    ).scalar() or 0
+
+    potential_matches_count = sum(
+        1 for c in correlations if c.correlation_status == "POTENTIAL_MATCH"
+    )
+    kev_count = sum(1 for c in correlations if c.is_kev)
+    req_verif_count = sum(
+        1 for c in correlations if c.correlation_status == "REQUIRES_VERIFICATION"
+    )
+
+    # 4. Finalize ScanRun
+    scan_run.status = "completed"
+    scan_run.completed_at = datetime.now(timezone.utc)
+    scan_run.total_findings = len(correlations)
+    scan_run.summary = {
+        "operation": "vulnerability_intelligence_cve_correlation",
+        "technologies_analyzed": tech_count,
+        "cves_correlated": len(correlations),
+        "potential_matches": potential_matches_count,
+        "kev_listed_cves": kev_count,
+        "requires_verification": req_verif_count,
+    }
+
+    investigation.status = "active"
+    db.commit()
+
+    # 5. Format response details
+    details: List[VulnerabilityCorrelationDetail] = []
+    for c in correlations:
+        tech_rec = db.get(Technology, c.technology_id)
+        asset_val = tech_rec.asset.value if tech_rec and tech_rec.asset else target_domain
+        asset_id_val = tech_rec.asset_id if tech_rec else target.id
+
+        kev_dto = None
+        if c.kev_details:
+            kev_dto = KEVDetailResponse(
+                vendor_project=c.kev_details.vendor_project,
+                product=c.kev_details.product,
+                vulnerability_name=c.kev_details.vulnerability_name,
+                date_added=c.kev_details.date_added,
+                required_action=c.kev_details.required_action,
+                due_date=c.kev_details.due_date,
+                ransomware_campaign=c.kev_details.known_ransomware_campaign_use,
+            )
+
+        # Retrieve DB TechnologyVulnerability ID if available
+        tv_id = uuid.uuid4()
+        if tech_rec:
+            tv_rec = db.execute(
+                select(TechnologyVulnerability)
+                .join(Vulnerability, TechnologyVulnerability.vulnerability_id == Vulnerability.id)
+                .where(
+                    TechnologyVulnerability.technology_id == tech_rec.id,
+                    Vulnerability.cve_id == c.cve_id,
+                )
+            ).scalar_one_or_none()
+            if tv_rec:
+                tv_id = tv_rec.id
+
+        details.append(
+            VulnerabilityCorrelationDetail(
+                id=tv_id,
+                technology_id=c.technology_id,
+                technology_name=c.technology_name,
+                observed_version=c.observed_version,
+                asset_id=asset_id_val,
+                asset_value=asset_val,
+                cve_id=c.cve_id,
+                title=c.title,
+                description=c.description,
+                severity=c.severity,
+                cvss_score=c.cvss_score,
+                cvss_vector=c.cvss_vector,
+                is_kev=c.is_kev,
+                kev_details=kev_dto,
+                correlation_status=c.correlation_status,
+                match_confidence=c.match_confidence,
+                match_basis=c.match_basis,
+                source=c.source,
+                published_date=c.published_date,
+                scan_run_id=scan_run.id,
+                created_at=now_utc,
+            )
+        )
+
+    return CorrelateVulnerabilitiesResponse(
+        investigation_id=investigation.id,
+        scan_run_id=scan_run.id,
+        target_domain=target_domain,
+        technologies_analyzed=tech_count,
+        cves_correlated=len(correlations),
+        potential_matches=potential_matches_count,
+        kev_listed_cves=kev_count,
+        requires_verification=req_verif_count,
+        results=details,
+        completed_at=scan_run.completed_at,
+    )
+
+
+@router.get(
+    "/{investigation_id}/vulnerabilities",
+    response_model=List[VulnerabilityCorrelationDetail],
+    summary="List Correlated Vulnerabilities for Investigation",
+    description="Retrieves passive CVE intelligence and technology correlations for an investigation.",
+)
+def list_investigation_vulnerabilities(
+    investigation_id: uuid.UUID,
+    scan_run_id: Optional[uuid.UUID] = None,
+    technology: Optional[str] = None,
+    cve_id: Optional[str] = None,
+    is_kev: Optional[bool] = None,
+    verification_status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[VulnerabilityCorrelationDetail]:
+    """Retrieve correlated vulnerabilities for an investigation with optional filtering."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    query = (
+        select(TechnologyVulnerability)
+        .join(Technology, TechnologyVulnerability.technology_id == Technology.id)
+        .join(Asset, Technology.asset_id == Asset.id)
+        .join(Vulnerability, TechnologyVulnerability.vulnerability_id == Vulnerability.id)
+        .where(Asset.investigation_id == investigation_id)
+        .order_by(TechnologyVulnerability.created_at.desc())
+    )
+
+    if scan_run_id:
+        query = query.where(Technology.scan_run_id == scan_run_id)
+
+    if technology:
+        query = query.where(Technology.name.ilike(f"%{technology}%"))
+
+    if cve_id:
+        query = query.where(Vulnerability.cve_id.ilike(f"%{cve_id}%"))
+
+    if verification_status:
+        query = query.where(
+            TechnologyVulnerability.verification_status == verification_status.lower()
+        )
+
+    results = db.execute(query).scalars().all()
+
+    items: List[VulnerabilityCorrelationDetail] = []
+    for tv in results:
+        notes_data: Dict[str, Any] = {}
+        if tv.notes:
+            try:
+                notes_data = json.loads(tv.notes)
+            except Exception:
+                notes_data = {"match_basis": tv.notes}
+
+        kev_flag = notes_data.get("is_kev", False)
+        if is_kev is not None and kev_flag != is_kev:
+            continue
+
+        kev_info = None
+        if notes_data.get("kev_details"):
+            kd = notes_data["kev_details"]
+            kev_info = KEVDetailResponse(
+                vendor_project=kd.get("vendor_project", "Unknown"),
+                product=kd.get("product", "Unknown"),
+                vulnerability_name=kd.get("vulnerability_name", ""),
+                date_added=kd.get("date_added"),
+                required_action=kd.get("required_action", ""),
+                due_date=kd.get("due_date"),
+                ransomware_campaign=kd.get("ransomware_campaign", "Unknown"),
+            )
+
+        items.append(
+            VulnerabilityCorrelationDetail(
+                id=tv.id,
+                technology_id=tv.technology_id,
+                technology_name=tv.technology.name if tv.technology else "",
+                observed_version=tv.technology.version if tv.technology else None,
+                asset_id=tv.technology.asset_id if tv.technology else tv.id,
+                asset_value=tv.technology.asset.value if tv.technology and tv.technology.asset else None,
+                cve_id=tv.vulnerability.cve_id if tv.vulnerability else "",
+                title=tv.vulnerability.title if tv.vulnerability else None,
+                description=tv.vulnerability.description if tv.vulnerability else "",
+                severity=tv.vulnerability.severity if tv.vulnerability else "UNKNOWN",
+                cvss_score=tv.vulnerability.cvss_v3_score if tv.vulnerability else None,
+                cvss_vector=tv.vulnerability.cvss_vector if tv.vulnerability else None,
+                is_kev=kev_flag,
+                kev_details=kev_info,
+                correlation_status=notes_data.get(
+                    "correlation_status", tv.verification_status.upper()
+                ),
+                match_confidence=tv.match_confidence,
+                match_basis=notes_data.get("match_basis", "CPE / Version correlation"),
+                source=tv.vulnerability.source if tv.vulnerability else "NVD",
+                published_date=tv.vulnerability.published_date if tv.vulnerability else None,
+                scan_run_id=tv.technology.scan_run_id if tv.technology else None,
+                created_at=tv.created_at,
+            )
+        )
+
+    return items
+
 
 

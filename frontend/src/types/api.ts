@@ -279,4 +279,53 @@ export interface FingerprintResponse {
   note: string;
 }
 
+export interface KEVDetail {
+  vendor_project: string;
+  product: string;
+  vulnerability_name: string;
+  date_added?: string | null;
+  required_action: string;
+  due_date?: string | null;
+  ransomware_campaign: string;
+}
+
+export interface VulnerabilityCorrelationDetail {
+  id: string;
+  technology_id: string;
+  technology_name: string;
+  observed_version?: string | null;
+  asset_id: string;
+  asset_value?: string | null;
+  cve_id: string;
+  title?: string | null;
+  description: string;
+  severity: string;
+  cvss_score?: number | null;
+  cvss_vector?: string | null;
+  is_kev: boolean;
+  kev_details?: KEVDetail | null;
+  correlation_status: string;
+  match_confidence: number;
+  match_basis: string;
+  source: string;
+  published_date?: string | null;
+  scan_run_id?: string | null;
+  created_at: string;
+}
+
+export interface CorrelateVulnerabilitiesResponse {
+  investigation_id: string;
+  scan_run_id: string;
+  target_domain: string;
+  technologies_analyzed: number;
+  cves_correlated: number;
+  potential_matches: number;
+  kev_listed_cves: number;
+  requires_verification: number;
+  results: VulnerabilityCorrelationDetail[];
+  completed_at: string;
+  note: string;
+}
+
+
 

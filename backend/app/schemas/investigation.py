@@ -379,3 +379,60 @@ class FingerprintResponse(BaseModel):
         "Observations persisted and linked with ScanRun."
     )
 
+
+class KEVDetailResponse(BaseModel):
+    """CISA Known Exploited Vulnerability details."""
+    vendor_project: str = "Unknown"
+    product: str = "Unknown"
+    vulnerability_name: str = ""
+    date_added: Optional[str] = None
+    required_action: str = ""
+    due_date: Optional[str] = None
+    ransomware_campaign: str = "Unknown"
+
+
+class VulnerabilityCorrelationDetail(BaseModel):
+    """Correlated vulnerability intelligence item linking an observed technology to a CVE."""
+    id: uuid.UUID
+    technology_id: uuid.UUID
+    technology_name: str
+    observed_version: Optional[str] = None
+    asset_id: uuid.UUID
+    asset_value: Optional[str] = None
+    cve_id: str
+    title: Optional[str] = None
+    description: str
+    severity: str
+    cvss_score: Optional[float] = None
+    cvss_vector: Optional[str] = None
+    is_kev: bool = False
+    kev_details: Optional[KEVDetailResponse] = None
+    correlation_status: str
+    match_confidence: float
+    match_basis: str
+    source: str = "NVD"
+    published_date: Optional[datetime] = None
+    scan_run_id: Optional[uuid.UUID] = None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CorrelateVulnerabilitiesResponse(BaseModel):
+    """Structured response returned by Vulnerability Intelligence & CVE Correlation (Stage 6)."""
+    investigation_id: uuid.UUID
+    scan_run_id: uuid.UUID
+    target_domain: str
+    technologies_analyzed: int
+    cves_correlated: int
+    potential_matches: int
+    kev_listed_cves: int
+    requires_verification: int
+    results: List[VulnerabilityCorrelationDetail] = Field(default_factory=list)
+    completed_at: datetime
+    note: str = (
+        "Passive vulnerability intelligence correlation completed. "
+        "Matches represent potential software version associations and do NOT confirm active target exploitability."
+    )
+
+

@@ -30,6 +30,9 @@ from backend.app.schemas.investigation import (
     TLSMetadataSummaryResponse,
     ServiceFingerprintDetail,
     FingerprintResponse,
+    KEVDetailResponse,
+    VulnerabilityCorrelationDetail,
+    CorrelateVulnerabilitiesResponse,
 )
 
 __all__ = [
@@ -60,5 +63,8 @@ __all__ = [
     "TLSMetadataSummaryResponse",
     "ServiceFingerprintDetail",
     "FingerprintResponse",
+    "KEVDetailResponse",
+    "VulnerabilityCorrelationDetail",
+    "CorrelateVulnerabilitiesResponse",
 ]
 
