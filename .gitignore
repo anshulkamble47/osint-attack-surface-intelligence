@@ -61,3 +61,8 @@ docker_data/
 *~
 .DS_Store
 Thumbs.db
+
+# Local documentation/reference images
+docs/360_F_743053883_PX2ayk40WllhG8d71reoiaQYIgXLJ8di.jpg
+docs/360_F_743053883_PX2ayk40WllhG8d71reoiaQYIgXLJ8di.webp
+docs/osint dashboard system architecture image.png
