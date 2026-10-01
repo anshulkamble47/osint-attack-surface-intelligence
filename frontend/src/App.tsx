@@ -24,6 +24,8 @@ import {
   Filter,
   ShieldAlert,
   Zap,
+  GitCompare,
+  History,
 } from 'lucide-react';
 
 import { 
@@ -50,6 +52,7 @@ import {
   generateInvestigationFindings,
   listInvestigationFindings,
   updateInvestigationFindingStatus,
+  compareScanRuns,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -72,6 +75,8 @@ import {
   GraphResponse,
   GraphNode,
   FindingResponse,
+  ChangeRecordResponse,
+  ComparisonSummaryResponse,
 } from './types/api';
 
 
@@ -157,6 +162,17 @@ export const App: React.FC = () => {
   const [filterFindingSeverity, setFilterFindingSeverity] = useState<string>('ALL');
   const [filterFindingStatus, setFilterFindingStatus] = useState<string>('ALL');
   const [filterFindingType, setFilterFindingType] = useState<string>('ALL');
+
+  // Stage 9 Monitoring & Change Detection State
+  const [runningCompare, setRunningCompare] = useState(false);
+  const [comparisonResult, setComparisonResult] = useState<ComparisonSummaryResponse | null>(null);
+  const [changesList, setChangesList] = useState<ChangeRecordResponse[]>([]);
+  const [selectedBaselineScan, setSelectedBaselineScan] = useState<string>('');
+  const [selectedCurrentScan, setSelectedCurrentScan] = useState<string>('');
+  const [filterChangeType, setFilterChangeType] = useState<string>('ALL');
+  const [filterChangeCategory, setFilterChangeCategory] = useState<string>('ALL');
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const [selectedChangeRecord, setSelectedChangeRecord] = useState<ChangeRecordResponse | null>(null);
 
   // Probe health
   const checkHealth = useCallback(async () => {
@@ -510,6 +526,30 @@ export const App: React.FC = () => {
       setVulnError(err.message || 'Vulnerability intelligence & CVE correlation failed');
     } finally {
       setRunningVulnCorrelate(false);
+    }
+  };
+
+  // Handle Compare Scans & Monitoring (Stage 9)
+  const handleCompareScans = async () => {
+    if (!token || !selectedInv) return;
+    setRunningCompare(true);
+    setChangeError(null);
+    try {
+      const res = await compareScanRuns(
+        token,
+        selectedInv.id,
+        selectedBaselineScan || undefined,
+        selectedCurrentScan || undefined
+      );
+      setComparisonResult(res);
+      setChangesList(res.changes);
+      if (res.changes.length > 0) {
+        setSelectedChangeRecord(res.changes[0]);
+      }
+    } catch (err: any) {
+      setChangeError(err.message || 'Failed to compare scan runs');
+    } finally {
+      setRunningCompare(false);
     }
   };
 
@@ -2210,6 +2250,315 @@ export const App: React.FC = () => {
                   ) : (
                     <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
                       No security findings generated yet for this investigation. Click <strong>Generate Findings & Risk</strong> to run correlation.
+                    </div>
+                  )}
+                </div>
+
+                {/* 8. Attack Surface Monitoring & Change Detection Section */}
+                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid #06b6d4' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{ background: 'rgba(6, 182, 212, 0.15)', padding: '0.6rem', borderRadius: '10px', color: 'var(--cyan-400)' }}>
+                        <History size={22} />
+                      </div>
+                      <div>
+                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                          8. Attack Surface Monitoring & Change Detection
+                        </h2>
+                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                          Deterministic, evidence-backed point-in-time diffing across domains, DNS, IPs, services, tech, CVEs, and certificates
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <input
+                          type="text"
+                          className="input"
+                          placeholder="Baseline Scan ID (optional)"
+                          value={selectedBaselineScan}
+                          onChange={e => setSelectedBaselineScan(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: '160px', fontFamily: 'var(--font-mono)' }}
+                        />
+                        <input
+                          type="text"
+                          className="input"
+                          placeholder="Current Scan ID (optional)"
+                          value={selectedCurrentScan}
+                          onChange={e => setSelectedCurrentScan(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: '160px', fontFamily: 'var(--font-mono)' }}
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <Filter size={14} color="var(--text-muted)" />
+                        <select
+                          className="input"
+                          value={filterChangeType}
+                          onChange={e => setFilterChangeType(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Change Types</option>
+                          <option value="ADDED">Added (+)</option>
+                          <option value="REMOVED">Removed (-)</option>
+                          <option value="MODIFIED">Modified (~)</option>
+                        </select>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <select
+                          className="input"
+                          value={filterChangeCategory}
+                          onChange={e => setFilterChangeCategory(e.target.value)}
+                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
+                        >
+                          <option value="ALL">All Categories</option>
+                          <option value="subdomain">Subdomain</option>
+                          <option value="dns_record">DNS Record</option>
+                          <option value="ip_observation">IP Observation</option>
+                          <option value="service_exposure">Service Exposure</option>
+                          <option value="technology">Technology</option>
+                          <option value="vulnerability">Vulnerability</option>
+                          <option value="certificate">Certificate</option>
+                          <option value="asset_relationship">Relationship</option>
+                          <option value="finding">Finding</option>
+                        </select>
+                      </div>
+
+                      <button
+                        className="btn btn-primary"
+                        onClick={handleCompareScans}
+                        disabled={runningCompare || !selectedInv}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #0284c7, #06b6d4)' }}
+                      >
+                        <GitCompare size={16} className={runningCompare ? 'animate-spin' : ''} />
+                        {runningCompare ? 'Diffing Scans...' : 'Compare Scan Runs'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {changeError && (
+                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <XCircle size={16} />
+                      <span>{changeError}</span>
+                    </div>
+                  )}
+
+                  {/* Summary Metric Strip */}
+                  {comparisonResult && (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Changes</div>
+                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
+                          {comparisonResult.total_changes}
+                        </div>
+                      </div>
+
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Added (+)</div>
+                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)', marginTop: '0.2rem' }}>
+                          +{comparisonResult.added_count}
+                        </div>
+                      </div>
+
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(244, 63, 94, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)' }}>Removed (-)</div>
+                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.2rem' }}>
+                          -{comparisonResult.removed_count}
+                        </div>
+                      </div>
+
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(250, 204, 21, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: '#facc15' }}>Modified (~)</div>
+                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#facc15', marginTop: '0.2rem' }}>
+                          ~{comparisonResult.modified_count}
+                        </div>
+                      </div>
+
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Scan Attribution</div>
+                        <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--cyan-400)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
+                          Run #{comparisonResult.baseline_scan_run_number || 1} → #{comparisonResult.current_scan_run_number || 2}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Changes Split Explorer & Inspector */}
+                  {changesList.length > 0 ? (
+                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1rem', alignItems: 'start' }}>
+                      {/* Left: Changes List */}
+                      <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+                          <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Detected Changes ({changesList.filter(c => {
+                              if (filterChangeType !== 'ALL' && c.change_type !== filterChangeType) return false;
+                              if (filterChangeCategory !== 'ALL' && (c.category !== filterChangeCategory && c.field_name !== filterChangeCategory)) return false;
+                              return true;
+                            }).length})
+                          </h4>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click change to inspect diff</span>
+                        </div>
+
+                        <div style={{ maxHeight: '420px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          {changesList
+                            .filter(c => {
+                              if (filterChangeType !== 'ALL' && c.change_type !== filterChangeType) return false;
+                              if (filterChangeCategory !== 'ALL' && (c.category !== filterChangeCategory && c.field_name !== filterChangeCategory)) return false;
+                              return true;
+                            })
+                            .map(change => {
+                              const isSelected = selectedChangeRecord?.id === change.id;
+                              const typeBadge =
+                                change.change_type === 'ADDED' ? { bg: 'rgba(16, 185, 129, 0.2)', border: 'rgba(16, 185, 129, 0.4)', color: 'var(--emerald-400)', label: '+ ADDED' } :
+                                change.change_type === 'REMOVED' ? { bg: 'rgba(244, 63, 94, 0.2)', border: 'rgba(244, 63, 94, 0.4)', color: 'var(--rose-400)', label: '- REMOVED' } :
+                                { bg: 'rgba(250, 204, 21, 0.2)', border: 'rgba(250, 204, 21, 0.4)', color: '#facc15', label: '~ MODIFIED' };
+
+                              return (
+                                <div
+                                  key={change.id}
+                                  onClick={() => setSelectedChangeRecord(change)}
+                                  style={{
+                                    padding: '0.75rem',
+                                    borderRadius: '8px',
+                                    background: isSelected ? 'rgba(6, 182, 212, 0.12)' : 'rgba(30, 41, 59, 0.45)',
+                                    border: isSelected ? '1px solid var(--cyan-400)' : '1px solid var(--border-subtle)',
+                                    cursor: 'pointer',
+                                    transition: 'all 0.15s ease',
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    gap: '0.4rem',
+                                  }}
+                                >
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                      <span
+                                        className="badge"
+                                        style={{
+                                          fontSize: '0.65rem',
+                                          background: typeBadge.bg,
+                                          border: `1px solid ${typeBadge.border}`,
+                                          color: typeBadge.color,
+                                          fontWeight: 700,
+                                        }}
+                                      >
+                                        {typeBadge.label}
+                                      </span>
+                                      <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>
+                                        {change.category}
+                                      </span>
+                                    </div>
+                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                                      {new Date(change.detected_at).toLocaleTimeString()}
+                                    </span>
+                                  </div>
+
+                                  <div style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                    {change.description || change.entity_key}
+                                  </div>
+
+                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                    {change.entity_key}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                      </div>
+
+                      {/* Right: Selected Change Inspector */}
+                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
+                          <History size={18} color="var(--cyan-400)" />
+                          <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            Change Record Inspector
+                          </h4>
+                        </div>
+
+                        {selectedChangeRecord ? (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                            <div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Entity Key</div>
+                              <div style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', color: 'var(--cyan-400)', wordBreak: 'break-all' }}>
+                                {selectedChangeRecord.entity_key}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Description</div>
+                              <p style={{ fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
+                                {selectedChangeRecord.description}
+                              </p>
+                            </div>
+
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)', fontWeight: 600, marginBottom: '0.3rem' }}>
+                                  Baseline State (Old)
+                                </div>
+                                <pre
+                                  style={{
+                                    background: 'rgba(0, 0, 0, 0.45)',
+                                    border: '1px solid rgba(244, 63, 94, 0.25)',
+                                    padding: '0.65rem',
+                                    borderRadius: '6px',
+                                    fontSize: '0.75rem',
+                                    fontFamily: 'var(--font-mono)',
+                                    color: 'var(--text-secondary)',
+                                    maxHeight: '200px',
+                                    overflowY: 'auto',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {selectedChangeRecord.old_value ? JSON.stringify(selectedChangeRecord.old_value, null, 2) : 'null (Newly Added)'}
+                                </pre>
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)', fontWeight: 600, marginBottom: '0.3rem' }}>
+                                  Current State (New)
+                                </div>
+                                <pre
+                                  style={{
+                                    background: 'rgba(0, 0, 0, 0.45)',
+                                    border: '1px solid rgba(16, 185, 129, 0.25)',
+                                    padding: '0.65rem',
+                                    borderRadius: '6px',
+                                    fontSize: '0.75rem',
+                                    fontFamily: 'var(--font-mono)',
+                                    color: 'var(--text-secondary)',
+                                    maxHeight: '200px',
+                                    overflowY: 'auto',
+                                    whiteSpace: 'pre-wrap',
+                                    wordBreak: 'break-all',
+                                  }}
+                                >
+                                  {selectedChangeRecord.new_value ? JSON.stringify(selectedChangeRecord.new_value, null, 2) : 'null (No longer observed in current scan)'}
+                                </pre>
+                              </div>
+                            </div>
+
+                            {selectedChangeRecord.evidence_hash && (
+                              <div style={{ background: 'rgba(0, 0, 0, 0.3)', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-subtle)', fontSize: '0.75rem' }}>
+                                <span style={{ color: 'var(--text-muted)' }}>Evidence Hash (SHA-256): </span>
+                                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
+                                  {selectedChangeRecord.evidence_hash}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2.5rem 0' }}>
+                            Select a change record from the list to inspect state diffs.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      No scan differences computed yet. Click <strong>Compare Scan Runs</strong> to detect attack surface changes.
                     </div>
                   )}
                 </div>

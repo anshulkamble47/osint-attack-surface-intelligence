@@ -51,6 +51,12 @@ from backend.app.schemas.finding import (
     GenerateFindingsResponse,
     FindingListResponse,
 )
+from backend.app.schemas.change import (
+    ChangeRecordResponse,
+    CompareScanRunsRequest,
+    ComparisonSummaryResponse,
+    ChangeListResponse,
+)
 
 __all__ = [
     "UserRole",
@@ -96,6 +102,10 @@ __all__ = [
     "FindingStatusUpdateRequest",
     "GenerateFindingsResponse",
     "FindingListResponse",
+    "ChangeRecordResponse",
+    "CompareScanRunsRequest",
+    "ComparisonSummaryResponse",
+    "ChangeListResponse",
 ]
 
 

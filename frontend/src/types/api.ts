@@ -453,6 +453,59 @@ export interface FindingListResponse {
   findings: FindingResponse[];
 }
 
+export interface ChangeRecordResponse {
+  id: string;
+  investigation_id: string;
+  baseline_scan_run_id?: string | null;
+  current_scan_run_id: string;
+  asset_id?: string | null;
+  asset_value?: string | null;
+  change_type: 'ADDED' | 'REMOVED' | 'MODIFIED';
+  field_name: string;
+  category: string;
+  entity_key?: string | null;
+  description?: string | null;
+  old_value?: Record<string, any> | null;
+  new_value?: Record<string, any> | null;
+  evidence_id?: string | null;
+  evidence_hash?: string | null;
+  detected_at: string;
+}
+
+export interface CompareScanRunsRequest {
+  baseline_scan_run_id?: string | null;
+  current_scan_run_id?: string | null;
+}
+
+export interface ComparisonSummaryResponse {
+  investigation_id: string;
+  baseline_scan_run_id?: string | null;
+  current_scan_run_id: string;
+  baseline_scan_run_number?: number | null;
+  current_scan_run_number?: number | null;
+  total_changes: number;
+  added_count: number;
+  removed_count: number;
+  modified_count: number;
+  changes_by_category: Record<string, number>;
+  changes_by_type: Record<string, number>;
+  changes: ChangeRecordResponse[];
+  compared_at: string;
+  message: string;
+}
+
+export interface ChangeListResponse {
+  investigation_id: string;
+  baseline_scan_run_id?: string | null;
+  current_scan_run_id?: string | null;
+  total: number;
+  added_count: number;
+  removed_count: number;
+  modified_count: number;
+  changes_by_category: Record<string, number>;
+  changes: ChangeRecordResponse[];
+}
+
 
 
 

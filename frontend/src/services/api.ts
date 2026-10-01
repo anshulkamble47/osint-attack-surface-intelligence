@@ -21,6 +21,8 @@ import {
   FindingResponse,
   GenerateFindingsResponse,
   FindingListResponse,
+  ComparisonSummaryResponse,
+  ChangeListResponse,
 } from '../types/api';
 
 
@@ -327,6 +329,52 @@ export async function updateInvestigationFindingStatus(
     method: 'PATCH',
     headers: { Authorization: `Bearer ${token}` },
     body: JSON.stringify({ status }),
+  });
+}
+
+export async function compareScanRuns(
+  token: string,
+  investigationId: string,
+  baselineScanRunId?: string,
+  currentScanRunId?: string
+): Promise<ComparisonSummaryResponse> {
+  return request<ComparisonSummaryResponse>(`/investigations/${investigationId}/monitoring/compare`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify({
+      baseline_scan_run_id: baselineScanRunId || null,
+      current_scan_run_id: currentScanRunId || null,
+    }),
+  });
+}
+
+export async function listInvestigationChanges(
+  token: string,
+  investigationId: string,
+  baselineScanRunId?: string,
+  currentScanRunId?: string,
+  changeType?: string,
+  category?: string,
+  assetId?: string
+): Promise<ChangeListResponse> {
+  const params = new URLSearchParams();
+  if (baselineScanRunId) params.append('baseline_scan_run_id', baselineScanRunId);
+  if (currentScanRunId) params.append('current_scan_run_id', currentScanRunId);
+  if (changeType) params.append('change_type', changeType);
+  if (category) params.append('category', category);
+  if (assetId) params.append('asset_id', assetId);
+  const qs = params.toString() ? `?${params.toString()}` : '';
+  return request<ChangeListResponse>(`/investigations/${investigationId}/changes${qs}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function getMonitoringSummary(
+  token: string,
+  investigationId: string
+): Promise<ChangeListResponse> {
+  return request<ChangeListResponse>(`/investigations/${investigationId}/monitoring/summary`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
 }
 

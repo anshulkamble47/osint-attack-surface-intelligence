@@ -10,6 +10,7 @@ from sqlalchemy import (
     Uuid,
     ForeignKey,
     JSON,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from backend.app.database.connection import Base
@@ -18,7 +19,7 @@ from backend.app.database.connection import Base
 class ChangeRecord(Base):
     """
     Change record computed between successive scans (ADDED, REMOVED, MODIFIED).
-    Enables monitoring of attack surface evolution over time.
+    Enables deterministic monitoring of attack surface evolution over time.
     """
 
     __tablename__ = "change_records"
@@ -44,28 +45,59 @@ class ChangeRecord(Base):
         nullable=False,
         index=True,
     )
-    asset_id: Mapped[uuid.UUID] = mapped_column(
+    asset_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         Uuid(as_uuid=True),
         ForeignKey("assets.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
         index=True,
     )
     change_type: Mapped[str] = mapped_column(
         String(20), nullable=False, index=True
     )  # ADDED, REMOVED, MODIFIED
     field_name: Mapped[str] = mapped_column(
-        String(100), nullable=False
-    )  # ip_resolution, technology, open_port, cert_expiry
+        String(100), nullable=False, index=True
+    )  # subdomain, domain, dns_record, ip_observation, service_exposure, technology, vulnerability, certificate, asset_relationship, finding
+    category: Mapped[Optional[str]] = mapped_column(
+        String(50), nullable=True, index=True
+    )  # subdomain, domain, dns_record, ip_observation, service_exposure, technology, vulnerability, certificate, asset_relationship, finding
+    entity_key: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, index=True
+    )  # Stable identity key for deterministic comparison
+    description: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
     old_value: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSON, nullable=True
     )
     new_value: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSON, nullable=True
     )
+    evidence_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("evidence.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    evidence_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
     detected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
         default=lambda: datetime.now(timezone.utc),
+    )
+
+    # Unique constraint preventing duplicate change records for the same comparison
+    __table_args__ = (
+        UniqueConstraint(
+            "investigation_id",
+            "previous_scan_id",
+            "current_scan_id",
+            "change_type",
+            "field_name",
+            "entity_key",
+            name="uq_change_records_comparison",
+        ),
     )
 
     # Relationships
@@ -75,9 +107,20 @@ class ChangeRecord(Base):
     )
     previous_scan = relationship("ScanRun", foreign_keys=[previous_scan_id])
     asset = relationship("Asset")
+    evidence = relationship("Evidence")
+
+    @property
+    def baseline_scan_run_id(self) -> Optional[uuid.UUID]:
+        """Alias for previous_scan_id representing baseline comparison ScanRun."""
+        return self.previous_scan_id
+
+    @property
+    def current_scan_run_id(self) -> uuid.UUID:
+        """Alias for current_scan_id representing current comparison ScanRun."""
+        return self.current_scan_id
 
     def __repr__(self) -> str:
-        return f"<ChangeRecord type={self.change_type} field={self.field_name} asset={self.asset_id}>"
+        return f"<ChangeRecord type={self.change_type} category={self.category} key={self.entity_key}>"
 
 
 class TimelineEvent(Base):
@@ -102,7 +145,7 @@ class TimelineEvent(Base):
     )
     event_type: Mapped[str] = mapped_column(
         String(50), nullable=False, index=True
-    )  # asset_discovered, ip_changed, technology_detected, cert_observed
+    )  # asset_discovered, ip_changed, technology_detected, cert_observed, change_detected
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     event_time: Mapped[datetime] = mapped_column(

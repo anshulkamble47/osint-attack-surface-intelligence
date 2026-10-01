@@ -50,6 +50,12 @@ from backend.app.schemas.finding import (
     GenerateFindingsResponse,
     FindingListResponse,
 )
+from backend.app.schemas.change import (
+    ChangeRecordResponse,
+    CompareScanRunsRequest,
+    ComparisonSummaryResponse,
+    ChangeListResponse,
+)
 from backend.app.services.ct_service import CTService, CTProviderError
 from backend.app.services.dns_service import DNSService
 from backend.app.services.reachability_service import ReachabilityService
@@ -61,6 +67,13 @@ from backend.app.services.technology_service import TechnologyService
 from backend.app.services.vulnerability_service import VulnerabilityService
 from backend.app.services.correlation_service import CorrelationService
 from backend.app.services.finding_service import FindingService
+from backend.app.services.change_service import ChangeDetectionService
+
+
+
+def get_change_detection_service() -> ChangeDetectionService:
+    """Dependency provider returning ChangeDetectionService instance."""
+    return ChangeDetectionService()
 
 
 
@@ -2320,6 +2333,171 @@ def update_investigation_finding_status(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.post(
+    "/{investigation_id}/monitoring/compare",
+    response_model=ComparisonSummaryResponse,
+    summary="Compare Scan Runs & Detect Attack Surface Changes",
+    description="Deterministically compares two point-in-time ScanRuns and computes explicit ADDED, REMOVED, and MODIFIED records across all observable asset categories.",
+)
+def compare_investigation_scans(
+    investigation_id: uuid.UUID,
+    payload: Optional[CompareScanRunsRequest] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    change_service: ChangeDetectionService = Depends(get_change_detection_service),
+) -> ComparisonSummaryResponse:
+    """Execute ScanRun comparison to compute attack surface changes."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    baseline_id = payload.baseline_scan_run_id if payload else None
+    current_id = payload.current_scan_run_id if payload else None
+
+    # Validate scan run ownership upfront if explicit IDs provided
+    if baseline_id:
+        b_scan = db.get(ScanRun, baseline_id)
+        if not b_scan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Baseline ScanRun not found",
+            )
+        if b_scan.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Baseline ScanRun does not belong to this investigation",
+            )
+
+    if current_id:
+        c_scan = db.get(ScanRun, current_id)
+        if not c_scan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Current ScanRun not found",
+            )
+        if c_scan.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current ScanRun does not belong to this investigation",
+            )
+
+    try:
+        return change_service.compare_scan_runs(
+            db=db,
+            investigation_id=investigation_id,
+            baseline_scan_run_id=baseline_id,
+            current_scan_run_id=current_id,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
+
+@router.get(
+    "/{investigation_id}/changes",
+    response_model=ChangeListResponse,
+    summary="List Attack Surface Change Records",
+    description="Retrieves computed change records with filtering by baseline/current ScanRuns, change type, category, and asset.",
+)
+def list_investigation_changes(
+    investigation_id: uuid.UUID,
+    baseline_scan_run_id: Optional[uuid.UUID] = None,
+    current_scan_run_id: Optional[uuid.UUID] = None,
+    change_type: Optional[str] = None,
+    category: Optional[str] = None,
+    asset_id: Optional[uuid.UUID] = None,
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    change_service: ChangeDetectionService = Depends(get_change_detection_service),
+) -> ChangeListResponse:
+    """List and filter change records for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    if baseline_scan_run_id:
+        b_scan = db.get(ScanRun, baseline_scan_run_id)
+        if not b_scan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Baseline ScanRun not found",
+            )
+        if b_scan.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Baseline ScanRun does not belong to this investigation",
+            )
+
+    if current_scan_run_id:
+        c_scan = db.get(ScanRun, current_scan_run_id)
+        if not c_scan:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Current ScanRun not found",
+            )
+        if c_scan.investigation_id != investigation_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Current ScanRun does not belong to this investigation",
+            )
+
+    return change_service.list_investigation_changes(
+        db=db,
+        investigation_id=investigation_id,
+        baseline_scan_run_id=baseline_scan_run_id,
+        current_scan_run_id=current_scan_run_id,
+        change_type=change_type,
+        category=category,
+        asset_id=asset_id,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get(
+    "/{investigation_id}/monitoring/summary",
+    response_model=ChangeListResponse,
+    summary="Get Monitoring Changes Summary",
+    description="Returns latest monitoring change statistics and recent change records for an investigation.",
+)
+def get_monitoring_summary(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    change_service: ChangeDetectionService = Depends(get_change_detection_service),
+) -> ChangeListResponse:
+    """Retrieve monitoring summary for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    return change_service.list_investigation_changes(
+        db=db,
+        investigation_id=investigation_id,
+        limit=50,
+        offset=0,
+    )
 
 
 
