@@ -439,7 +439,7 @@ def run_ct_discovery(
                 asset_type="domain",
                 value=target_domain,
                 is_active=True,
-                source="crt.sh",
+                source=discovery_result.source,
                 last_scan_run_id=scan_run.id,
             )
             db.add(root_asset)
@@ -483,7 +483,7 @@ def run_ct_discovery(
                 # CT discovery does NOT prove host is active: candidate only
                 is_active=False,
                 confidence=0.85,
-                source="crt.sh",
+                source=discovery_result.source,
                 tags=["ct_candidate", "passive_discovery"],
                 last_scan_run_id=scan_run.id,
             )
@@ -508,7 +508,7 @@ def run_ct_discovery(
                     domain_id=root_domain_rec.id,
                     subdomain_name=hostname,
                     is_resolving=False,  # Unresolved until Stage 3B DNS probe
-                    discovery_source="crt.sh",
+                    discovery_source=discovery_result.source,
                 )
                 db.add(subdomain)
                 existing_subdomains_by_name[hostname] = subdomain
@@ -607,7 +607,10 @@ def run_ct_discovery(
     scan_run.completed_at = datetime.now(timezone.utc)
     scan_run.total_discovered_assets = len(discovery_result.hostnames)
     scan_run.summary = {
-        "source": "crt.sh",
+        "source": discovery_result.source,
+        "provider_used": discovery_result.provider_used,
+        "fallback_used": discovery_result.fallback_used,
+        "provider_attempts": discovery_result.provider_attempts,
         "discovered_hostnames_count": len(discovery_result.hostnames),
         "certificates_count": len(discovery_result.certificates),
     }
@@ -620,20 +623,30 @@ def run_ct_discovery(
     db.commit()
 
     logger.info(
-        f"Stored CT discovery results for '{target_domain}': "
+        f"Stored CT discovery results for '{target_domain}' via {discovery_result.provider_used}: "
         f"{len(discovery_result.hostnames)} assets, {len(discovery_result.certificates)} certs"
+    )
+
+    prov_note = (
+        f"Certificate Transparency discovery completed using {discovery_result.provider_used}"
+        + (" (fallback provider)." if discovery_result.fallback_used else ".")
+        + " Discovered hostnames are stored as candidate assets pending active DNS resolution."
     )
 
     return CTDiscoveryResponse(
         investigation_id=investigation.id,
         target_domain=target_domain,
         scan_run_id=scan_run.id,
-        source="crt.sh",
+        source=discovery_result.source,
+        provider_used=discovery_result.provider_used,
+        fallback_used=discovery_result.fallback_used,
+        provider_attempts=discovery_result.provider_attempts,
         hostname_count=len(discovery_result.hostnames),
         certificate_count=len(certificate_summaries),
         hostnames=discovery_result.hostnames,
         certificates=certificate_summaries,
         discovery_timestamp=discovery_result.retrieval_timestamp,
+        note=prov_note,
     )
 
 

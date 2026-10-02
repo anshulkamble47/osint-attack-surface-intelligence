@@ -62,8 +62,12 @@ class Settings(BaseSettings):
                 )
         return v
 
-    # External APIs (Prepared for future stages)
+    # External APIs & Certificate Transparency Configuration
     GROQ_API_KEY: str = ""
+    CTLOGS_API_KEY: str = ""
+    CT_PRIMARY_PROVIDER: str = "crt.sh"
+    CT_FALLBACK_ENABLED: bool = True
+    CT_PROVIDER_TIMEOUT_SECONDS: float = 15.0
 
     model_config = SettingsConfigDict(
         env_file=".env",

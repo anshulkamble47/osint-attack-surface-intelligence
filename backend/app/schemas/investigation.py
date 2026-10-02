@@ -125,6 +125,9 @@ class CTDiscoveryResponse(BaseModel):
     target_domain: str
     scan_run_id: uuid.UUID
     source: str = "crt.sh"
+    provider_used: Optional[str] = None
+    fallback_used: bool = False
+    provider_attempts: Dict[str, str] = Field(default_factory=dict)
     hostname_count: int
     certificate_count: int
     hostnames: List[str]

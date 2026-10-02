@@ -219,6 +219,7 @@ def test_ct_service_parsing_normalization_and_san_filtering():
     - Deduplicates certificates
     """
     mock_provider = MagicMock(spec=CrtShProvider)
+    mock_provider.name = "crt.sh"
     mock_provider.fetch_certificates.return_value = MOCK_CRT_SH_RAW_DATA
 
     ct_service = CTService(provider=mock_provider)
@@ -269,6 +270,7 @@ def test_ct_discovery_endpoint_end_to_end_flow():
     with patch("backend.app.api.investigations.CTService") as MockCTServiceClass:
         mock_service_instance = MagicMock()
         mock_provider = MagicMock()
+        mock_provider.name = "crt.sh"
         mock_provider.fetch_certificates.return_value = MOCK_CRT_SH_RAW_DATA
         real_service = CTService(provider=mock_provider)
 
@@ -476,3 +478,383 @@ def test_crtsh_provider_unrecoverable_403_raises_ct_provider_error():
         provider.fetch_certificates("blocked.com")
 
     assert "HTTP 403" in str(exc_info.value)
+
+
+# --- 5. CtLogsProvider Tests ---
+
+MOCK_CTLOGS_PAGE1 = {
+    "rows": [
+        {
+            "id": "0000045306e2fcfbf57413af8d948ab08a664b849ee3",
+            "match": "api.example.com",
+            "not_before": "2025-01-01T00:00:00Z",
+            "not_after": "2025-04-01T00:00:00Z",
+            "serial_hex": "06e2fcfbf57413af8d948ab08a664b849ee3",
+            "issuer": "Let's Encrypt",
+            "key_algo": "ECDSA P-256",
+            "san_count": 1,
+        },
+        {
+            "id": "0000045306e2fcfbf57413af8d948ab08a664b849ee4",
+            "match": "*.vpn.example.com",
+            "not_before": "2025-02-01T00:00:00Z",
+            "not_after": "2025-05-01T00:00:00Z",
+            "serial_hex": "06e2fcfbf57413af8d948ab08a664b849ee4",
+            "issuer": "DigiCert",
+            "key_algo": "RSA 2048",
+            "san_count": 1,
+        },
+    ],
+    "has_next": True,
+    "next_cursor": "cursor_page_2",
+}
+
+MOCK_CTLOGS_PAGE2 = {
+    "rows": [
+        {
+            "id": "0000045306e2fcfbf57413af8d948ab08a664b849ee5",
+            "match": "mail.example.com",
+            "not_before": "2025-03-01T00:00:00Z",
+            "not_after": "2025-06-01T00:00:00Z",
+            "serial_hex": "06e2fcfbf57413af8d948ab08a664b849ee5",
+            "issuer": "Sectigo",
+            "key_algo": "RSA 2048",
+            "san_count": 1,
+        }
+    ],
+    "has_next": False,
+    "next_cursor": None,
+}
+
+
+def test_ctlogs_provider_pagination_and_parsing_success():
+    """Verify CtLogsProvider follows cursor pagination and maps rows into standard CT dictionaries."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_client = MagicMock()
+
+    res_p1 = MagicMock()
+    res_p1.status_code = 200
+    res_p1.json.return_value = MOCK_CTLOGS_PAGE1
+
+    res_p2 = MagicMock()
+    res_p2.status_code = 200
+    res_p2.json.return_value = MOCK_CTLOGS_PAGE2
+
+    mock_client.get.side_effect = [res_p1, res_p2]
+
+    provider = CtLogsProvider(client=mock_client, timeout=0.1, max_retries=2, api_key="test-api-key")
+    records = provider.fetch_certificates("example.com")
+
+    assert len(records) == 3
+    assert records[0]["common_name"] == "api.example.com"
+    assert records[0]["serial_number"] == "06e2fcfbf57413af8d948ab08a664b849ee3"
+    assert records[1]["common_name"] == "*.vpn.example.com"
+    assert records[2]["common_name"] == "mail.example.com"
+    assert mock_client.get.call_count == 2
+
+    # Verify authorization header was passed
+    call_headers = mock_client.get.call_args[1]["headers"]
+    assert call_headers["Authorization"] == "Bearer test-api-key"
+
+
+def test_ctlogs_provider_404_returns_empty_list():
+    """Verify CtLogsProvider returns empty list on 404 response."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_client = MagicMock()
+    res_404 = MagicMock()
+    res_404.status_code = 404
+    mock_client.get.return_value = res_404
+
+    provider = CtLogsProvider(client=mock_client, timeout=0.1, max_retries=2)
+    records = provider.fetch_certificates("empty-domain.com")
+    assert records == []
+
+
+def test_ctlogs_provider_retry_on_502_success():
+    """Verify CtLogsProvider retries transient 502 error and succeeds on second attempt."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_client = MagicMock()
+
+    res_502 = MagicMock()
+    res_502.status_code = 502
+    res_502.text = "Bad Gateway"
+
+    res_200 = MagicMock()
+    res_200.status_code = 200
+    res_200.json.return_value = MOCK_CTLOGS_PAGE2
+
+    mock_client.get.side_effect = [res_502, res_200]
+
+    provider = CtLogsProvider(client=mock_client, timeout=0.1, max_retries=3)
+    records = provider.fetch_certificates("example.com")
+
+    assert len(records) == 1
+    assert records[0]["common_name"] == "mail.example.com"
+    assert mock_client.get.call_count == 2
+
+
+def test_ctlogs_provider_exhaustion_raises_ct_provider_error():
+    """Verify CtLogsProvider raises CTProviderError when all retries return 500/502."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_client = MagicMock()
+
+    res_503 = MagicMock()
+    res_503.status_code = 503
+    res_503.text = "Service Unavailable"
+    mock_client.get.return_value = res_503
+
+    provider = CtLogsProvider(client=mock_client, timeout=0.1, max_retries=2)
+    with pytest.raises(CTProviderError) as exc_info:
+        provider.fetch_certificates("failing.com")
+
+    assert "Certificate Transparency fallback provider unavailable" in str(exc_info.value)
+
+
+# --- 6. Multi-Provider Fallback & Orchestration Tests ---
+
+def test_ct_service_primary_success_skips_fallback():
+    """Verify that when crt.sh succeeds, fallback provider is not called."""
+    mock_primary = MagicMock(spec=CrtShProvider)
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.return_value = MOCK_CRT_SH_RAW_DATA
+
+    mock_fallback = MagicMock()
+    mock_fallback.name = "ctlogs.dev"
+
+    service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+    result = service.discover("example.com")
+
+    assert result.source == "crt.sh"
+    assert result.provider_used == "crt.sh"
+    assert result.fallback_used is False
+    assert result.provider_attempts["crt.sh"] == "success"
+    assert mock_fallback.fetch_certificates.call_count == 0
+    assert len(result.hostnames) == 5
+
+
+def test_ct_service_primary_502_triggers_fallback_success():
+    """Verify that when crt.sh fails with HTTP 502, CTService seamlessly falls back to ctlogs.dev."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_primary = MagicMock(spec=CrtShProvider)
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("Certificate Transparency provider unavailable (HTTP 502)")
+
+    mock_fallback = MagicMock(spec=CtLogsProvider)
+    mock_fallback.name = "ctlogs.dev"
+    mock_fallback.fetch_certificates.return_value = [
+        {
+            "id": "ct_fallback_1",
+            "common_name": "app.example.com",
+            "name_value": "app.example.com\n*.internal.example.com",
+            "issuer_name": "Let's Encrypt",
+            "not_before": "2025-01-01T00:00:00Z",
+            "not_after": "2025-04-01T00:00:00Z",
+            "serial_number": "99887766",
+        }
+    ]
+
+    service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+    result = service.discover("example.com")
+
+    assert result.source == "ctlogs.dev"
+    assert result.provider_used == "ctlogs.dev"
+    assert result.fallback_used is True
+    assert "HTTP 502" in result.provider_attempts["crt.sh"]
+    assert result.provider_attempts["ctlogs.dev"] == "success"
+    assert mock_primary.fetch_certificates.call_count == 1
+    assert mock_fallback.fetch_certificates.call_count == 1
+
+    expected_hosts = {"example.com", "app.example.com", "internal.example.com"}
+    assert set(result.hostnames) == expected_hosts
+    assert len(result.certificates) == 1
+    assert result.certificates[0].serial_number == "99887766"
+
+
+def test_ct_service_primary_timeout_triggers_fallback_success():
+    """Verify that when crt.sh times out, fallback provider is executed successfully."""
+    from backend.app.services.ct_service import CtLogsProvider
+    mock_primary = MagicMock(spec=CrtShProvider)
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("Timeout connecting to crt.sh")
+
+    mock_fallback = MagicMock(spec=CtLogsProvider)
+    mock_fallback.name = "ctlogs.dev"
+    mock_fallback.fetch_certificates.return_value = [
+        {
+            "id": "ct_fallback_2",
+            "common_name": "portal.example.com",
+            "name_value": "portal.example.com",
+            "issuer_name": "DigiCert",
+            "not_before": "2025-01-01T00:00:00Z",
+            "not_after": "2025-06-01T00:00:00Z",
+            "serial_number": "11223344",
+        }
+    ]
+
+    service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+    result = service.discover("example.com")
+
+    assert result.provider_used == "ctlogs.dev"
+    assert result.fallback_used is True
+    assert "portal.example.com" in result.hostnames
+
+
+def test_ct_service_both_providers_fail_raises_ct_provider_error():
+    """Verify that when both crt.sh and ctlogs.dev fail, CTService raises a unified descriptive error."""
+    mock_primary = MagicMock(spec=CrtShProvider)
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("HTTP 502 from crt.sh")
+
+    mock_fallback = MagicMock()
+    mock_fallback.name = "ctlogs.dev"
+    mock_fallback.fetch_certificates.side_effect = CTProviderError("HTTP 503 from ctlogs.dev")
+
+    service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+    with pytest.raises(CTProviderError) as exc_info:
+        service.discover("example.com")
+
+    err_str = str(exc_info.value)
+    assert "Certificate Transparency providers unavailable" in err_str
+    assert "crt.sh" in err_str
+    assert "ctlogs.dev" in err_str
+
+
+def test_ct_service_fallback_disabled_raises_primary_error():
+    """Verify that when fallback is disabled, primary failure immediately raises without calling fallback."""
+    mock_primary = MagicMock(spec=CrtShProvider)
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("crt.sh down")
+
+    mock_fallback = MagicMock()
+    mock_fallback.name = "ctlogs.dev"
+
+    service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback, fallback_enabled=False)
+    with pytest.raises(CTProviderError) as exc_info:
+        service.discover("example.com")
+
+    assert "crt.sh down" in str(exc_info.value)
+    assert mock_fallback.fetch_certificates.call_count == 0
+
+
+def test_ct_discovery_endpoint_fallback_provenance_and_persistence():
+    """
+    Integration test for multi-provider fallback in FastAPI endpoint:
+    - Simulates crt.sh failure
+    - Verifies endpoint executes fallback to ctlogs.dev
+    - Verifies response returns provider_used="ctlogs.dev", fallback_used=True, provider_attempts
+    - Verifies database records (Subdomains, Assets, ScanRun) store discovery_source="ctlogs.dev"
+    """
+    headers = get_auth_headers("analyst_one")
+
+    inv_res = client.post(
+        "/api/investigations",
+        json={"name": "Fallback Provenance Test", "target_domain": "fallback-test.com"},
+        headers=headers,
+    )
+    assert inv_res.status_code == 201
+    inv_id = inv_res.json()["id"]
+
+    mock_primary = MagicMock()
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("HTTP 502 from crt.sh")
+
+    mock_fallback = MagicMock()
+    mock_fallback.name = "ctlogs.dev"
+    mock_fallback.fetch_certificates.return_value = [
+        {
+            "id": "ctlogs_rec_1",
+            "common_name": "secure.fallback-test.com",
+            "name_value": "secure.fallback-test.com\n*.dev.fallback-test.com",
+            "issuer_name": "Let's Encrypt",
+            "not_before": "2025-01-01T00:00:00Z",
+            "not_after": "2025-04-01T00:00:00Z",
+            "serial_number": "77889900",
+        }
+    ]
+
+    with patch("backend.app.api.investigations.CTService") as MockCTServiceClass:
+        real_service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+        mock_instance = MagicMock()
+        mock_instance.discover.side_effect = real_service.discover
+        MockCTServiceClass.return_value = mock_instance
+
+        res = client.post(f"/api/investigations/{inv_id}/discover/ct", headers=headers)
+
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["source"] == "ctlogs.dev"
+    assert data["provider_used"] == "ctlogs.dev"
+    assert data["fallback_used"] is True
+    assert "provider_attempts" in data
+    assert "HTTP 502" in data["provider_attempts"]["crt.sh"]
+    assert data["provider_attempts"]["ctlogs.dev"] == "success"
+    assert "secure.fallback-test.com" in data["hostnames"]
+    assert "dev.fallback-test.com" in data["hostnames"]
+    assert "fallback provider" in data["note"].lower()
+
+    # Verify database persistence with ctlogs.dev provenance
+    with TestingSessionLocal() as db:
+        scan_run = db.execute(select(ScanRun).where(ScanRun.investigation_id == uuid.UUID(inv_id))).scalar_one()
+        assert scan_run.status == "completed"
+        assert scan_run.summary["provider_used"] == "ctlogs.dev"
+        assert scan_run.summary["fallback_used"] is True
+
+        subdomains = db.execute(
+            select(Subdomain).join(Asset, Subdomain.asset_id == Asset.id).where(Asset.investigation_id == uuid.UUID(inv_id))
+        ).scalars().all()
+        for sub in subdomains:
+            assert sub.discovery_source == "ctlogs.dev"
+
+
+def test_ct_discovery_endpoint_idempotent_rerun_with_fallback():
+    """Verify that re-running CT discovery with fallback provider does not create duplicate assets or certificates."""
+    headers = get_auth_headers("analyst_one")
+
+    inv_res = client.post(
+        "/api/investigations",
+        json={"name": "Idempotent Fallback Test", "target_domain": "idempotent-test.com"},
+        headers=headers,
+    )
+    inv_id = inv_res.json()["id"]
+
+    mock_primary = MagicMock()
+    mock_primary.name = "crt.sh"
+    mock_primary.fetch_certificates.side_effect = CTProviderError("crt.sh down")
+
+    mock_fallback = MagicMock()
+    mock_fallback.name = "ctlogs.dev"
+    mock_fallback.fetch_certificates.return_value = [
+        {
+            "id": "rec_1",
+            "common_name": "app.idempotent-test.com",
+            "name_value": "app.idempotent-test.com",
+            "issuer_name": "Let's Encrypt",
+            "not_before": "2025-01-01T00:00:00Z",
+            "not_after": "2025-04-01T00:00:00Z",
+            "serial_number": "55443322",
+        }
+    ]
+
+    with patch("backend.app.api.investigations.CTService") as MockCTServiceClass:
+        real_service = CTService(primary_provider=mock_primary, fallback_provider=mock_fallback)
+        mock_instance = MagicMock()
+        mock_instance.discover.side_effect = real_service.discover
+        MockCTServiceClass.return_value = mock_instance
+
+        # First run
+        res1 = client.post(f"/api/investigations/{inv_id}/discover/ct", headers=headers)
+        assert res1.status_code == 200
+
+        # Second run (same data)
+        res2 = client.post(f"/api/investigations/{inv_id}/discover/ct", headers=headers)
+        assert res2.status_code == 200
+
+    with TestingSessionLocal() as db:
+        # Should have 2 assets total: root domain + app.idempotent-test.com
+        assets = db.execute(select(Asset).where(Asset.investigation_id == uuid.UUID(inv_id))).scalars().all()
+        assert len(assets) == 2
+
+        # Should have exactly 2 scan runs
+        scan_runs = db.execute(select(ScanRun).where(ScanRun.investigation_id == uuid.UUID(inv_id))).scalars().all()
+        assert len(scan_runs) == 2

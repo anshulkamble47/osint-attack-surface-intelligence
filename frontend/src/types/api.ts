@@ -75,6 +75,9 @@ export interface CTDiscoveryResponse {
   target_domain: string;
   scan_run_id: string;
   source: string;
+  provider_used?: string;
+  fallback_used?: boolean;
+  provider_attempts?: Record<string, string>;
   hostname_count: number;
   certificate_count: number;
   hostnames: string[];

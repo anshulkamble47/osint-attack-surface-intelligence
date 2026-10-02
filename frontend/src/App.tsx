@@ -359,7 +359,7 @@ export const App: React.FC = () => {
       type: 'running',
       stageNumber: 1,
       stageName: '1. Discover CT',
-      message: `Scanning Certificate Transparency logs via crt.sh for ${selectedInv.target_domain}...`,
+      message: `Scanning Certificate Transparency logs for ${selectedInv.target_domain}...`,
       timestamp: new Date(),
     });
     try {
@@ -368,23 +368,27 @@ export const App: React.FC = () => {
       const updatedAssets = await listInvestigationAssets(token, selectedInv.id);
       setAssets(updatedAssets);
       handleLoadScans();
+      const providerLabel = res.provider_used || res.source || 'crt.sh';
+      const successMsg = res.fallback_used
+        ? `Certificate Transparency discovery completed using fallback provider (${providerLabel}): ${res.hostname_count} hostnames discovered, ${res.certificate_count} certificates stored.`
+        : `Certificate Transparency discovery completed (${providerLabel}): ${res.hostname_count} hostnames discovered, ${res.certificate_count} certificates stored.`;
       setActionStatus({
         type: 'success',
         stageNumber: 1,
         stageName: '1. Discover CT',
-        message: `Certificate Transparency discovery completed: ${res.hostname_count} hostnames discovered, ${res.certificate_count} certificates stored.`,
+        message: successMsg,
         detail: res.note,
         timestamp: new Date(),
       });
     } catch (err: any) {
-      const msg = err.message || 'Certificate Transparency discovery failed';
+      const msg = err.message || 'Certificate Transparency providers are temporarily unavailable. Please retry later.';
       setCTError(msg);
       setActionStatus({
         type: 'error',
         stageNumber: 1,
         stageName: '1. Discover CT',
         message: msg,
-        detail: 'The external Certificate Transparency log provider (crt.sh) timed out or returned an error. Click Retry to attempt discovery again.',
+        detail: 'Certificate Transparency providers (primary and fallback) timed out or returned errors. Click Retry to attempt discovery again.',
         timestamp: new Date(),
       });
     } finally {
