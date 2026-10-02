@@ -20,6 +20,7 @@ from backend.app.models.evidence import Evidence
 from backend.app.schemas.investigation import (
     InvestigationCreateRequest,
     InvestigationResponse,
+    ScanRunResponse,
     CTDiscoveryResponse,
     CertificateSummaryResponse,
     AssetSummaryResponse,
@@ -320,6 +321,40 @@ def get_investigation(
     )
 
 
+@router.get(
+    "/{investigation_id}/scans",
+    response_model=List[ScanRunResponse],
+    summary="List ScanRuns for Investigation",
+    description="Returns all point-in-time ScanRun executions for an investigation ordered by run number.",
+)
+def list_investigation_scans(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[ScanRunResponse]:
+    """Retrieve all ScanRuns for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    scans = (
+        db.execute(
+            select(ScanRun)
+            .where(ScanRun.investigation_id == investigation_id)
+            .order_by(ScanRun.run_number.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+    return [ScanRunResponse.model_validate(s) for s in scans]
+
+
 @router.post(
     "/{investigation_id}/discover/ct",
     response_model=CTDiscoveryResponse,
@@ -416,19 +451,29 @@ def run_ct_discovery(
     # Map for tracking Subdomain entities
     subdomain_entities_by_name: dict[str, Subdomain] = {}
 
+    # Pre-fetch existing Asset entities for this investigation to avoid N+1 queries
+    existing_assets_query = db.execute(
+        select(Asset).where(Asset.investigation_id == investigation.id)
+    ).scalars().all()
+    existing_assets_by_value = {a.value: a for a in existing_assets_query}
+
+    # Pre-fetch existing Subdomain entities for this investigation
+    existing_subdomains_query = db.execute(
+        select(Subdomain)
+        .join(Asset, Subdomain.asset_id == Asset.id)
+        .where(Asset.investigation_id == investigation.id)
+    ).scalars().all()
+    existing_subdomains_by_name = {s.subdomain_name: s for s in existing_subdomains_query}
+
     # Store discovered hostname candidates as Asset + Subdomain
+    new_assets_to_flush = []
+    new_subdomains_to_flush = []
+
     for hostname in discovery_result.hostnames:
         is_root = (hostname == target_domain)
         asset_type = "domain" if is_root else "subdomain"
 
-        # Check existing asset for this investigation
-        asset = db.execute(
-            select(Asset).where(
-                Asset.investigation_id == investigation.id,
-                Asset.value == hostname,
-            )
-        ).scalar_one_or_none()
-
+        asset = existing_assets_by_value.get(hostname)
         if not asset:
             asset = Asset(
                 target_id=target.id,
@@ -443,16 +488,21 @@ def run_ct_discovery(
                 last_scan_run_id=scan_run.id,
             )
             db.add(asset)
-            db.flush()
+            existing_assets_by_value[hostname] = asset
+            new_assets_to_flush.append(asset)
         else:
             asset.last_scan_run_id = scan_run.id
             asset.last_seen_at = now_utc
 
+    if new_assets_to_flush:
+        db.flush()
+
+    for hostname in discovery_result.hostnames:
+        is_root = (hostname == target_domain)
         if not is_root:
-            subdomain = db.execute(
-                select(Subdomain).where(Subdomain.asset_id == asset.id)
-            ).scalar_one_or_none()
+            subdomain = existing_subdomains_by_name.get(hostname)
             if not subdomain:
+                asset = existing_assets_by_value[hostname]
                 subdomain = Subdomain(
                     asset_id=asset.id,
                     domain_id=root_domain_rec.id,
@@ -461,17 +511,28 @@ def run_ct_discovery(
                     discovery_source="crt.sh",
                 )
                 db.add(subdomain)
-                db.flush()
+                existing_subdomains_by_name[hostname] = subdomain
+                new_subdomains_to_flush.append(subdomain)
             subdomain_entities_by_name[hostname] = subdomain
 
-    # Store Certificates and link to subdomains
-    certificate_summaries: List[CertificateSummaryResponse] = []
+    if new_subdomains_to_flush:
+        db.flush()
 
+    # Pre-fetch existing Certificates by fingerprints in chunks to avoid oversized IN parameters
+    all_fps = [c.fingerprint_sha256 for c in discovery_result.certificates]
+    existing_certs_by_fp = {}
+    for i in range(0, len(all_fps), 500):
+        chunk = all_fps[i:i+500]
+        c_rows = db.execute(
+            select(Certificate).where(Certificate.fingerprint_sha256.in_(chunk))
+        ).scalars().all()
+        for c in c_rows:
+            existing_certs_by_fp[c.fingerprint_sha256] = c
+
+    # Insert new certificates in bulk
+    new_certs_to_flush = []
     for cert_rec in discovery_result.certificates:
-        cert_db = db.execute(
-            select(Certificate).where(Certificate.fingerprint_sha256 == cert_rec.fingerprint_sha256)
-        ).scalar_one_or_none()
-
+        cert_db = existing_certs_by_fp.get(cert_rec.fingerprint_sha256)
         if not cert_db:
             cert_db = Certificate(
                 fingerprint_sha256=cert_rec.fingerprint_sha256,
@@ -486,28 +547,43 @@ def run_ct_discovery(
                 raw_data=cert_rec.raw_data,
             )
             db.add(cert_db)
-            db.flush()
+            existing_certs_by_fp[cert_rec.fingerprint_sha256] = cert_db
+            new_certs_to_flush.append(cert_db)
 
-        # Link relevant subdomains to this certificate in subdomain_certificates association table
+    if new_certs_to_flush:
+        db.flush()
+
+    # Pre-fetch existing subdomain_certificates associations for these subdomains
+    sub_ids = [s.id for s in subdomain_entities_by_name.values()]
+    existing_associations = set()
+    if sub_ids:
+        for i in range(0, len(sub_ids), 500):
+            sub_chunk = sub_ids[i:i+500]
+            assoc_rows = db.execute(
+                select(subdomain_certificates.c.subdomain_id, subdomain_certificates.c.certificate_id).where(
+                    subdomain_certificates.c.subdomain_id.in_(sub_chunk)
+                )
+            ).all()
+            for s_id, c_id in assoc_rows:
+                existing_associations.add((s_id, c_id))
+
+    new_associations_to_insert = []
+    certificate_summaries: List[CertificateSummaryResponse] = []
+
+    for cert_rec in discovery_result.certificates:
+        cert_db = existing_certs_by_fp[cert_rec.fingerprint_sha256]
         for san_name in cert_rec.san_list:
             sub_ent = subdomain_entities_by_name.get(san_name)
             if sub_ent:
-                # Check if association already exists
-                existing_assoc = db.execute(
-                    select(subdomain_certificates).where(
-                        subdomain_certificates.c.subdomain_id == sub_ent.id,
-                        subdomain_certificates.c.certificate_id == cert_db.id,
-                    )
-                ).first()
-                if not existing_assoc:
-                    db.execute(
-                        subdomain_certificates.insert().values(
-                            subdomain_id=sub_ent.id,
-                            certificate_id=cert_db.id,
-                            scan_run_id=scan_run.id,
-                            observed_at=now_utc,
-                        )
-                    )
+                pair = (sub_ent.id, cert_db.id)
+                if pair not in existing_associations:
+                    existing_associations.add(pair)
+                    new_associations_to_insert.append({
+                        "subdomain_id": sub_ent.id,
+                        "certificate_id": cert_db.id,
+                        "scan_run_id": scan_run.id,
+                        "observed_at": now_utc,
+                    })
 
         certificate_summaries.append(
             CertificateSummaryResponse(
@@ -521,6 +597,10 @@ def run_ct_discovery(
                 ct_log_id=cert_db.ct_log_id,
             )
         )
+
+    if new_associations_to_insert:
+        for i in range(0, len(new_associations_to_insert), 500):
+            db.execute(subdomain_certificates.insert().values(new_associations_to_insert[i:i+500]))
 
     # Complete ScanRun
     scan_run.status = "completed"

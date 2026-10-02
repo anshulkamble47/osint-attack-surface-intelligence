@@ -1,34 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { 
-  Shield, 
-  Layers,
-  Search,
-  User,
-  Globe,
-  FileText,
-  Lock,
-  Radio,
-  Activity,
-  CheckCircle2,
-  XCircle,
-  Server,
-  Network,
-  Cpu,
-  ShieldCheck,
-  Code2,
-  AlertTriangle,
-  Flame,
-  Share2,
-  GitFork,
-  Eye,
-  Filter,
-  ShieldAlert,
-  Zap,
-  GitCompare,
-  History,
-} from 'lucide-react';
-
-import { 
   fetchHealth, 
   loginUser, 
   registerUser, 
@@ -53,6 +24,7 @@ import {
   listInvestigationFindings,
   updateInvestigationFindingStatus,
   compareScanRuns,
+  listInvestigationScans,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -73,15 +45,25 @@ import {
   CorrelateVulnerabilitiesResponse,
   VulnerabilityCorrelationDetail,
   GraphResponse,
-  GraphNode,
   FindingResponse,
   ChangeRecordResponse,
   ComparisonSummaryResponse,
+  ScanRunResponse,
 } from './types/api';
 
-
-
-
+import { Header } from './components/layout/Header';
+import { Sidebar } from './components/layout/Sidebar';
+import { AuthView } from './components/auth/AuthView';
+import { OverviewDashboard, ActionResultInfo } from './components/overview/OverviewDashboard';
+import { AssetInventory } from './components/assets/AssetInventory';
+import { DnsInfrastructureView } from './components/infrastructure/DnsInfrastructureView';
+import { ServicesTechView } from './components/services/ServicesTechView';
+import { VulnerabilitiesView } from './components/vulnerabilities/VulnerabilitiesView';
+import { AttackSurfaceGraphView } from './components/graph/AttackSurfaceGraphView';
+import { FindingsRiskView } from './components/findings/FindingsRiskView';
+import { MonitoringChangesView } from './components/monitoring/MonitoringChangesView';
+import { ScanRunsView } from './components/scans/ScanRunsView';
+import { Modal } from './components/common/Modal';
 
 export const App: React.FC = () => {
   // System Health
@@ -93,17 +75,16 @@ export const App: React.FC = () => {
     const saved = localStorage.getItem('osint_user');
     return saved ? JSON.parse(saved) : null;
   });
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authEmail, setAuthEmail] = useState('');
-  const [authUsername, setAuthUsername] = useState('analyst_jane');
-  const [authPassword, setAuthPassword] = useState('Password123!');
-  const [authFullName, setAuthFullName] = useState('Jane Analyst');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authLoading, setAuthLoading] = useState(false);
 
-  // Investigation State
+  // Navigation State
+  const [activeTab, setActiveTab] = useState('overview');
+
+  // Investigation Management State
   const [investigations, setInvestigations] = useState<InvestigationResponse[]>([]);
   const [selectedInv, setSelectedInv] = useState<InvestigationResponse | null>(null);
+  const [isNewInvModalOpen, setIsNewInvModalOpen] = useState(false);
   const [invName, setInvName] = useState('Acme External Attack Surface');
   const [invDomain, setInvDomain] = useState('example.com');
   const [invOrg, setInvOrg] = useState('Acme Corporation');
@@ -143,13 +124,11 @@ export const App: React.FC = () => {
   const [vulnResult, setVulnResult] = useState<CorrelateVulnerabilitiesResponse | null>(null);
   const [vulnerabilities, setVulnerabilities] = useState<VulnerabilityCorrelationDetail[]>([]);
   const [vulnError, setVulnError] = useState<string | null>(null);
-  const [filterKevOnly, setFilterKevOnly] = useState(false);
 
   // Stage 7 Attack Surface Graph & Correlation State
   const [runningGraph, setRunningGraph] = useState(false);
   const [graphData, setGraphData] = useState<GraphResponse | null>(null);
   const [graphError, setGraphError] = useState<string | null>(null);
-  const [selectedGraphNode, setSelectedGraphNode] = useState<GraphNode | null>(null);
   const [filterNodeType, setFilterNodeType] = useState<string>('ALL');
   const [filterRelType, setFilterRelType] = useState<string>('ALL');
 
@@ -159,22 +138,19 @@ export const App: React.FC = () => {
   const [selectedFinding, setSelectedFinding] = useState<FindingResponse | null>(null);
   const [findingError, setFindingError] = useState<string | null>(null);
 
-  const [filterFindingSeverity, setFilterFindingSeverity] = useState<string>('ALL');
-  const [filterFindingStatus, setFilterFindingStatus] = useState<string>('ALL');
-  const [filterFindingType, setFilterFindingType] = useState<string>('ALL');
-
   // Stage 9 Monitoring & Change Detection State
   const [runningCompare, setRunningCompare] = useState(false);
   const [comparisonResult, setComparisonResult] = useState<ComparisonSummaryResponse | null>(null);
   const [changesList, setChangesList] = useState<ChangeRecordResponse[]>([]);
   const [selectedBaselineScan, setSelectedBaselineScan] = useState<string>('');
   const [selectedCurrentScan, setSelectedCurrentScan] = useState<string>('');
-  const [filterChangeType, setFilterChangeType] = useState<string>('ALL');
-  const [filterChangeCategory, setFilterChangeCategory] = useState<string>('ALL');
   const [changeError, setChangeError] = useState<string | null>(null);
   const [selectedChangeRecord, setSelectedChangeRecord] = useState<ChangeRecordResponse | null>(null);
 
-  // Probe health
+  // ScanRuns History State
+  const [scanRuns, setScanRuns] = useState<ScanRunResponse[]>([]);
+
+  // Health Probe
   const checkHealth = useCallback(async () => {
     try {
       const data = await fetchHealth();
@@ -207,7 +183,7 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Handle Load Graph
+  // Load Graph Data
   const handleLoadGraph = useCallback(async () => {
     if (!token || !selectedInv) return;
     setRunningGraph(true);
@@ -217,14 +193,6 @@ export const App: React.FC = () => {
       const relTypes = filterRelType !== 'ALL' ? [filterRelType.toUpperCase()] : undefined;
       const res = await getInvestigationGraph(token, selectedInv.id, undefined, nodeTypes, relTypes);
       setGraphData(res);
-      if (res.nodes.length > 0) {
-        setSelectedGraphNode(prev => {
-          if (prev && res.nodes.some(n => n.id === prev.id)) {
-            return res.nodes.find(n => n.id === prev.id) || res.nodes[0];
-          }
-          return res.nodes[0];
-        });
-      }
     } catch (err: any) {
       setGraphError(err.message || 'Failed to load attack surface graph');
     } finally {
@@ -232,105 +200,57 @@ export const App: React.FC = () => {
     }
   }, [token, selectedInv, filterNodeType, filterRelType]);
 
-  // Handle Load Findings
+  // Load Findings Data
   const handleLoadFindings = useCallback(async () => {
     if (!token || !selectedInv) return;
     setFindingError(null);
     try {
-      const sev = filterFindingSeverity !== 'ALL' ? filterFindingSeverity : undefined;
-      const st = filterFindingStatus !== 'ALL' ? filterFindingStatus : undefined;
-      const ft = filterFindingType !== 'ALL' ? filterFindingType : undefined;
-      const res = await listInvestigationFindings(token, selectedInv.id, undefined, sev, st, ft);
+      const res = await listInvestigationFindings(token, selectedInv.id);
       setFindingsList(res.findings);
-      if (res.findings.length > 0) {
-        setSelectedFinding(prev => {
-          if (prev && res.findings.some(f => f.id === prev.id)) {
-            return res.findings.find(f => f.id === prev.id) || res.findings[0];
-          }
-          return res.findings[0];
-        });
+      if (res.findings.length > 0 && !selectedFinding) {
+        setSelectedFinding(res.findings[0]);
       }
     } catch (err: any) {
       console.error('Failed to load findings:', err);
       setFindingError(err.message || 'Failed to load findings');
     }
-  }, [token, selectedInv, filterFindingSeverity, filterFindingStatus, filterFindingType]);
+  }, [token, selectedInv, selectedFinding]);
 
-  // Handle Generate Findings
-  const handleGenerateFindings = async () => {
-    if (!token || !selectedInv) return;
-    setRunningFindings(true);
-    setFindingError(null);
-    try {
-      const res = await generateInvestigationFindings(token, selectedInv.id);
-      setFindingsList(res.findings);
-      if (res.findings.length > 0) {
-        setSelectedFinding(res.findings[0]);
-      }
-    } catch (err: any) {
-      setFindingError(err.message || 'Failed to generate findings');
-    } finally {
-      setRunningFindings(false);
-    }
-  };
-
-  // Handle Update Finding Status
-  const handleUpdateFindingStatus = async (findingId: string, newStatus: string) => {
+  // Load ScanRuns Data
+  const handleLoadScans = useCallback(async () => {
     if (!token || !selectedInv) return;
     try {
-      const updated = await updateInvestigationFindingStatus(token, selectedInv.id, findingId, newStatus);
-      setSelectedFinding(updated);
-      setFindingsList(prev => prev.map(f => f.id === updated.id ? updated : f));
+      const runs = await listInvestigationScans(token, selectedInv.id);
+      setScanRuns(runs);
     } catch (err: any) {
-      setFindingError(err.message || 'Failed to update finding status');
+      console.error('Failed to load scan runs:', err);
     }
-  };
+  }, [token, selectedInv]);
 
-  // Load assets, DNS records, services, IP addresses, ASNs, technologies, security observations, vulnerabilities, graph, and findings
+  // Sync data whenever selected investigation changes
   useEffect(() => {
     if (token && selectedInv) {
-      listInvestigationAssets(token, selectedInv.id)
-        .then(setAssets)
-        .catch(console.error);
-      listInvestigationDNSRecords(token, selectedInv.id)
-        .then(setDnsRecords)
-        .catch(console.error);
-      listInvestigationServices(token, selectedInv.id)
-        .then(setServices)
-        .catch(console.error);
-      listInvestigationIPAddresses(token, selectedInv.id)
-        .then(setIPAddresses)
-        .catch(console.error);
-      listInvestigationASNs(token, selectedInv.id)
-        .then(setASNs)
-        .catch(console.error);
-      listInvestigationTechnologies(token, selectedInv.id)
-        .then(setTechnologies)
-        .catch(console.error);
-      listInvestigationSecurityHeaders(token, selectedInv.id)
-        .then(setSecurityHeaders)
-        .catch(console.error);
-      listInvestigationTLSMetadata(token, selectedInv.id)
-        .then(setTLSMetadata)
-        .catch(console.error);
-      listInvestigationVulnerabilities(token, selectedInv.id)
-        .then(setVulnerabilities)
-        .catch(console.error);
+      listInvestigationAssets(token, selectedInv.id).then(setAssets).catch(console.error);
+      listInvestigationDNSRecords(token, selectedInv.id).then(setDnsRecords).catch(console.error);
+      listInvestigationServices(token, selectedInv.id).then(setServices).catch(console.error);
+      listInvestigationIPAddresses(token, selectedInv.id).then(setIPAddresses).catch(console.error);
+      listInvestigationASNs(token, selectedInv.id).then(setASNs).catch(console.error);
+      listInvestigationTechnologies(token, selectedInv.id).then(setTechnologies).catch(console.error);
+      listInvestigationSecurityHeaders(token, selectedInv.id).then(setSecurityHeaders).catch(console.error);
+      listInvestigationTLSMetadata(token, selectedInv.id).then(setTLSMetadata).catch(console.error);
+      listInvestigationVulnerabilities(token, selectedInv.id).then(setVulnerabilities).catch(console.error);
       handleLoadGraph();
       handleLoadFindings();
+      handleLoadScans();
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph, handleLoadFindings]);
-
-
-
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph, handleLoadFindings, handleLoadScans]);
 
   // Handle Login
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleLogin = async (username: string, pass: string) => {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      const res = await loginUser(authUsername, authPassword);
+      const res = await loginUser(username, pass);
       setToken(res.access_token);
       setCurrentUser(res.user);
       localStorage.setItem('osint_jwt', res.access_token);
@@ -343,14 +263,13 @@ export const App: React.FC = () => {
     }
   };
 
-  // Handle Registration
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Handle Register
+  const handleRegister = async (email: string, username: string, pass: string, fullName: string) => {
     setAuthLoading(true);
     setAuthError(null);
     try {
-      await registerUser(authEmail, authUsername, authPassword, authFullName);
-      const loginRes = await loginUser(authUsername, authPassword);
+      await registerUser(email, username, pass, fullName);
+      const loginRes = await loginUser(username, pass);
       setToken(loginRes.access_token);
       setCurrentUser(loginRes.user);
       localStorage.setItem('osint_jwt', loginRes.access_token);
@@ -383,8 +302,11 @@ export const App: React.FC = () => {
     setVulnResult(null);
     setVulnerabilities([]);
     setGraphData(null);
-    setSelectedGraphNode(null);
-    setGraphError(null);
+    setFindingsList([]);
+    setSelectedFinding(null);
+    setChangesList([]);
+    setComparisonResult(null);
+    setScanRuns([]);
     localStorage.removeItem('osint_jwt');
     localStorage.removeItem('osint_user');
   };
@@ -399,11 +321,15 @@ export const App: React.FC = () => {
       const created = await createInvestigation(token, invName, invDomain, invOrg);
       setInvestigations(prev => [created, ...prev]);
       setSelectedInv(created);
+      setIsNewInvModalOpen(false);
       setCTResult(null);
       setResolveResult(null);
       setIPEnrichResult(null);
       setFingerprintResult(null);
       setVulnResult(null);
+      setAssets([]);
+      setDnsRecords([]);
+      setServices([]);
       setIPAddresses([]);
       setASNs([]);
       setTechnologies([]);
@@ -411,31 +337,56 @@ export const App: React.FC = () => {
       setTLSMetadata([]);
       setVulnerabilities([]);
       setGraphData(null);
-      setSelectedGraphNode(null);
-      setGraphError(null);
-      setInvName('');
-
-      setInvDomain('');
-      setInvOrg('');
+      setFindingsList([]);
+      setChangesList([]);
+      setScanRuns([]);
     } catch (err: any) {
-      setInvError(err.message || 'Failed to create investigation');
+      setInvError(err.message || 'Failed to create assessment');
     } finally {
       setCreatingInv(false);
     }
   };
 
-  // Handle Run CT Discovery
+  // Pipeline Action Real-Time Status & Banner State
+  const [actionStatus, setActionStatus] = useState<ActionResultInfo | null>(null);
+
+  // Handle Run CT Discovery (Stage 3A)
   const handleRunCT = async () => {
     if (!token || !selectedInv) return;
     setRunningCT(true);
     setCTError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 1,
+      stageName: '1. Discover CT',
+      message: `Scanning Certificate Transparency logs via crt.sh for ${selectedInv.target_domain}...`,
+      timestamp: new Date(),
+    });
     try {
       const res = await runCTDiscovery(token, selectedInv.id);
       setCTResult(res);
       const updatedAssets = await listInvestigationAssets(token, selectedInv.id);
       setAssets(updatedAssets);
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 1,
+        stageName: '1. Discover CT',
+        message: `Certificate Transparency discovery completed: ${res.hostname_count} hostnames discovered, ${res.certificate_count} certificates stored.`,
+        detail: res.note,
+        timestamp: new Date(),
+      });
     } catch (err: any) {
-      setCTError(err.message || 'Certificate Transparency discovery failed');
+      const msg = err.message || 'Certificate Transparency discovery failed';
+      setCTError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 1,
+        stageName: '1. Discover CT',
+        message: msg,
+        detail: 'The external Certificate Transparency log provider (crt.sh) timed out or returned an error. Click Retry to attempt discovery again.',
+        timestamp: new Date(),
+      });
     } finally {
       setRunningCT(false);
     }
@@ -446,19 +397,45 @@ export const App: React.FC = () => {
     if (!token || !selectedInv) return;
     setRunningResolve(true);
     setResolveError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 2,
+      stageName: '2. Resolve DNS',
+      message: `Probing DNS records and HTTP reachability for discovered subdomains...`,
+      timestamp: new Date(),
+    });
     try {
       const res = await resolveInvestigation(token, selectedInv.id);
       setResolveResult(res);
-      const [updatedAssets, updatedDns, updatedServices] = await Promise.all([
+      const [updatedAssets, updatedDns, updatedServices, updatedIPs] = await Promise.all([
         listInvestigationAssets(token, selectedInv.id),
         listInvestigationDNSRecords(token, selectedInv.id),
         listInvestigationServices(token, selectedInv.id),
+        listInvestigationIPAddresses(token, selectedInv.id),
       ]);
       setAssets(updatedAssets);
       setDnsRecords(updatedDns);
       setServices(updatedServices);
+      setIPAddresses(updatedIPs);
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 2,
+        stageName: '2. Resolve DNS',
+        message: `DNS & Reachability probe completed: ${res.candidates_processed} hostnames probed, ${res.resolved} resolving, ${res.dns_records_discovered} DNS records found, ${res.services_discovered} services exposed.`,
+        detail: res.note,
+        timestamp: new Date(),
+      });
     } catch (err: any) {
-      setResolveError(err.message || 'Active DNS resolution & reachability probe failed');
+      const msg = err.message || 'Active DNS resolution & reachability probe failed';
+      setResolveError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 2,
+        stageName: '2. Resolve DNS',
+        message: msg,
+        timestamp: new Date(),
+      });
     } finally {
       setRunningResolve(false);
     }
@@ -469,6 +446,13 @@ export const App: React.FC = () => {
     if (!token || !selectedInv) return;
     setRunningIPEnrich(true);
     setIPEnrichError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 3,
+      stageName: '3. IP/ASN',
+      message: `Enriching IP, ASN & RDAP...`,
+      timestamp: new Date(),
+    });
     try {
       const res = await enrichInvestigationIPs(token, selectedInv.id);
       setIPEnrichResult(res);
@@ -480,8 +464,25 @@ export const App: React.FC = () => {
       setAssets(updatedAssets);
       setIPAddresses(updatedIPs);
       setASNs(updatedASNs);
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 3,
+        stageName: '3. IP/ASN',
+        message: `IP/ASN/RDAP enrichment completed: ${res.public_ips ?? res.ips_processed} IPs enriched, ${res.asn_success} ASNs observed.`,
+        detail: res.note,
+        timestamp: new Date(),
+      });
     } catch (err: any) {
-      setIPEnrichError(err.message || 'IP, ASN, and RDAP enrichment failed');
+      const msg = err.message || 'IP, ASN, and RDAP enrichment failed';
+      setIPEnrichError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 3,
+        stageName: '3. IP/ASN',
+        message: msg,
+        timestamp: new Date(),
+      });
     } finally {
       setRunningIPEnrich(false);
     }
@@ -492,21 +493,47 @@ export const App: React.FC = () => {
     if (!token || !selectedInv) return;
     setRunningFingerprint(true);
     setFingerprintError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 4,
+      stageName: '4. Tech/Headers',
+      message: `Analyzing HTTP response headers, TLS metadata, server banners, and software technologies...`,
+      timestamp: new Date(),
+    });
     try {
       const res = await runFingerprinting(token, selectedInv.id);
       setFingerprintResult(res);
-      const [updatedAssets, updatedTechs, updatedHeaders, updatedTLS] = await Promise.all([
+      const [updatedAssets, updatedTechs, updatedHeaders, updatedTLS, updatedServices] = await Promise.all([
         listInvestigationAssets(token, selectedInv.id),
         listInvestigationTechnologies(token, selectedInv.id),
         listInvestigationSecurityHeaders(token, selectedInv.id),
         listInvestigationTLSMetadata(token, selectedInv.id),
+        listInvestigationServices(token, selectedInv.id),
       ]);
       setAssets(updatedAssets);
       setTechnologies(updatedTechs);
       setSecurityHeaders(updatedHeaders);
       setTLSMetadata(updatedTLS);
+      setServices(updatedServices);
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 4,
+        stageName: '4. Tech/Headers',
+        message: `Technology & Security Fingerprinting completed: ${res.services_processed} services probed, ${res.technologies_detected} technologies identified, ${res.security_headers_analyzed} security headers analyzed.`,
+        detail: res.note,
+        timestamp: new Date(),
+      });
     } catch (err: any) {
-      setFingerprintError(err.message || 'Technology & Security Fingerprinting failed');
+      const msg = err.message || 'Technology & Security Fingerprinting failed';
+      setFingerprintError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 4,
+        stageName: '4. Tech/Headers',
+        message: msg,
+        timestamp: new Date(),
+      });
     } finally {
       setRunningFingerprint(false);
     }
@@ -517,19 +544,96 @@ export const App: React.FC = () => {
     if (!token || !selectedInv) return;
     setRunningVulnCorrelate(true);
     setVulnError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 5,
+      stageName: '5. Correlate CVEs',
+      message: `Correlating observed technologies against NVD CVE advisories and CISA Known Exploited Vulnerabilities...`,
+      timestamp: new Date(),
+    });
     try {
       const res = await correlateInvestigationVulnerabilities(token, selectedInv.id);
       setVulnResult(res);
       const updatedVulns = await listInvestigationVulnerabilities(token, selectedInv.id);
       setVulnerabilities(updatedVulns);
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 5,
+        stageName: '5. Correlate CVEs',
+        message: `Vulnerability & CVE correlation completed: ${res.cves_correlated} CVE matches found across ${res.technologies_analyzed} technologies (${res.kev_listed_cves} CISA KEV cataloged).`,
+        detail: res.note,
+        timestamp: new Date(),
+      });
     } catch (err: any) {
-      setVulnError(err.message || 'Vulnerability intelligence & CVE correlation failed');
+      const msg = err.message || 'Vulnerability intelligence & CVE correlation failed';
+      setVulnError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 5,
+        stageName: '5. Correlate CVEs',
+        message: msg,
+        timestamp: new Date(),
+      });
     } finally {
       setRunningVulnCorrelate(false);
     }
   };
 
-  // Handle Compare Scans & Monitoring (Stage 9)
+  // Handle Generate Findings (Stage 8)
+  const handleGenerateFindings = async () => {
+    if (!token || !selectedInv) return;
+    setRunningFindings(true);
+    setFindingError(null);
+    setActionStatus({
+      type: 'running',
+      stageNumber: 6,
+      stageName: '6. Generate Findings',
+      message: `Evaluating contextual platform risk scores and generating evidence-backed findings...`,
+      timestamp: new Date(),
+    });
+    try {
+      const res = await generateInvestigationFindings(token, selectedInv.id);
+      setFindingsList(res.findings);
+      if (res.findings.length > 0) {
+        setSelectedFinding(res.findings[0]);
+      }
+      handleLoadScans();
+      setActionStatus({
+        type: 'success',
+        stageNumber: 6,
+        stageName: '6. Generate Findings',
+        message: `Security Findings Assessment completed: ${res.findings_generated} findings generated (${res.findings.length} total active findings).`,
+        timestamp: new Date(),
+      });
+    } catch (err: any) {
+      const msg = err.message || 'Failed to generate findings';
+      setFindingError(msg);
+      setActionStatus({
+        type: 'error',
+        stageNumber: 6,
+        stageName: '6. Generate Findings',
+        message: msg,
+        timestamp: new Date(),
+      });
+    } finally {
+      setRunningFindings(false);
+    }
+  };
+
+  // Handle Update Finding Status (Stage 8)
+  const handleUpdateFindingStatus = async (findingId: string, newStatus: string) => {
+    if (!token || !selectedInv) return;
+    try {
+      const updated = await updateInvestigationFindingStatus(token, selectedInv.id, findingId, newStatus);
+      setSelectedFinding(updated);
+      setFindingsList(prev => prev.map(f => f.id === updated.id ? updated : f));
+    } catch (err: any) {
+      setFindingError(err.message || 'Failed to update finding status');
+    }
+  };
+
+  // Handle Compare Scans (Stage 9)
   const handleCompareScans = async () => {
     if (!token || !selectedInv) return;
     setRunningCompare(true);
@@ -553,2080 +657,288 @@ export const App: React.FC = () => {
     }
   };
 
+  // If Not Authenticated, Render Auth View
+  if (!token) {
+    return (
+      <AuthView
+        onLogin={handleLogin}
+        onRegister={handleRegister}
+        loading={authLoading}
+        error={authError}
+        healthData={healthData}
+      />
+    );
+  }
+
+  // Count badges for sidebar
+  const counts = {
+    assets: assets.length,
+    dns: dnsRecords.length,
+    services: services.length + technologies.length,
+    vulnerabilities: vulnerabilities.length,
+    graph: graphData ? graphData.nodes.length : 0,
+    findings: findingsList.length,
+    monitoring: changesList.length,
+    scans: scanRuns.length,
+  };
+
   return (
-    <div className="container">
-      {/* Header */}
-      <header style={{ marginBottom: '2rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
-            <div style={{
-              width: '46px',
-              height: '46px',
-              borderRadius: '10px',
-              background: 'linear-gradient(135deg, rgba(14, 165, 233, 0.25), rgba(56, 189, 248, 0.1))',
-              border: '1px solid rgba(56, 189, 248, 0.3)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--cyan-400)'
-            }}>
-              <Shield size={26} />
-            </div>
-            <div>
-              <h1 style={{ fontSize: '1.35rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
-                Attack Surface Intelligence & Risk Platform
-              </h1>
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                Stage 3B: Active DNS Intelligence & Reachability Probing
-              </p>
-            </div>
-          </div>
+    <div className="app-layout">
+      {/* Sidebar Navigation */}
+      <Sidebar
+        activeTab={activeTab}
+        onSelectTab={setActiveTab}
+        investigations={investigations}
+        selectedInv={selectedInv}
+        onSelectInv={inv => {
+          setSelectedInv(inv);
+          setCTResult(null);
+          setResolveResult(null);
+          setIPEnrichResult(null);
+          setFingerprintResult(null);
+          setVulnResult(null);
+          setGraphData(null);
+          setFindingsList([]);
+          setSelectedFinding(null);
+          setChangesList([]);
+          setComparisonResult(null);
+        }}
+        onOpenNewInvModal={() => setIsNewInvModalOpen(true)}
+        counts={counts}
+      />
 
+      {/* Main Content Area */}
+      <div className="main-content">
+        <Header
+          selectedInv={selectedInv}
+          currentUser={currentUser}
+          healthData={healthData}
+          onLogout={handleLogout}
+        />
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-            {currentUser && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(30, 41, 59, 0.5)', padding: '0.35rem 0.75rem', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
-                <User size={14} color="var(--cyan-400)" />
-                <span style={{ fontSize: '0.85rem', fontWeight: 500 }}>{currentUser.username}</span>
-                <span className="badge badge-neutral" style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem' }}>{currentUser.role}</span>
-                <button onClick={handleLogout} className="btn btn-secondary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}>Log out</button>
-              </div>
-            )}
-            <span className={`badge ${healthData?.database?.connected ? 'badge-success' : 'badge-danger'}`}>
-              <span className={`pulse-dot ${healthData?.database?.connected ? 'pulse-success' : 'pulse-danger'}`}></span>
-              {healthData?.database?.connected ? `PostgreSQL Connected (${healthData.database.latency_ms}ms)` : 'PostgreSQL Disconnected'}
+        <div className="content-container">
+          {selectedInv ? (
+            <>
+              {activeTab === 'overview' && (
+                <OverviewDashboard
+                  investigation={selectedInv}
+                  assets={assets}
+                  dnsRecords={dnsRecords}
+                  services={services}
+                  technologies={technologies}
+                  vulnerabilities={vulnerabilities}
+                  findings={findingsList}
+                  changes={changesList}
+                  onNavigateTab={setActiveTab}
+                  onRunCT={handleRunCT}
+                  onRunResolve={handleRunResolve}
+                  onRunIPEnrich={handleRunIPEnrich}
+                  onRunFingerprint={handleRunFingerprint}
+                  onRunVulnCorrelate={handleRunVulnCorrelate}
+                  onRunFindings={handleGenerateFindings}
+                  runningCT={runningCT}
+                  runningResolve={runningResolve}
+                  runningIPEnrich={runningIPEnrich}
+                  runningFingerprint={runningFingerprint}
+                  runningVulnCorrelate={runningVulnCorrelate}
+                  runningFindings={runningFindings}
+                  actionStatus={actionStatus}
+                  onDismissStatus={() => setActionStatus(null)}
+                />
+              )}
+
+              {activeTab === 'assets' && (
+                <AssetInventory
+                  assets={assets}
+                  onRunCT={handleRunCT}
+                  loading={runningCT}
+                  error={ctError}
+                  targetDomain={selectedInv.target_domain}
+                />
+              )}
+
+              {activeTab === 'dns' && (
+                <DnsInfrastructureView
+                  dnsRecords={dnsRecords}
+                  ipAddresses={ipAddresses}
+                  asns={asns}
+                  onRunResolve={handleRunResolve}
+                  onRunIPEnrich={handleRunIPEnrich}
+                  runningResolve={runningResolve}
+                  runningIPEnrich={runningIPEnrich}
+                  resolveError={resolveError}
+                  ipEnrichError={ipEnrichError}
+                  targetDomain={selectedInv.target_domain}
+                  actionStatus={actionStatus}
+                  onDismissStatus={() => setActionStatus(null)}
+                />
+              )}
+
+              {activeTab === 'services' && (
+                <ServicesTechView
+                  services={services}
+                  technologies={technologies}
+                  securityHeaders={securityHeaders}
+                  tlsMetadata={tlsMetadata}
+                  onRunFingerprint={handleRunFingerprint}
+                  loading={runningFingerprint}
+                  error={fingerprintError}
+                  targetDomain={selectedInv.target_domain}
+                />
+              )}
+
+              {activeTab === 'vulnerabilities' && (
+                <VulnerabilitiesView
+                  vulnerabilities={vulnerabilities}
+                  onRunCorrelation={handleRunVulnCorrelate}
+                  loading={runningVulnCorrelate}
+                  error={vulnError}
+                  targetDomain={selectedInv.target_domain}
+                />
+              )}
+
+              {activeTab === 'graph' && (
+                <AttackSurfaceGraphView
+                  graphData={graphData}
+                  onRefreshGraph={handleLoadGraph}
+                  loading={runningGraph}
+                  error={graphError}
+                  selectedNodeType={filterNodeType}
+                  onChangeNodeType={type => {
+                    setFilterNodeType(type);
+                  }}
+                  selectedRelType={filterRelType}
+                  onChangeRelType={rel => {
+                    setFilterRelType(rel);
+                  }}
+                />
+              )}
+
+              {activeTab === 'findings' && (
+                <FindingsRiskView
+                  findings={findingsList}
+                  onGenerateFindings={handleGenerateFindings}
+                  onUpdateStatus={handleUpdateFindingStatus}
+                  loading={runningFindings}
+                  error={findingError}
+                  selectedFinding={selectedFinding}
+                  onSelectFinding={setSelectedFinding}
+                  targetDomain={selectedInv.target_domain}
+                />
+              )}
+
+              {activeTab === 'monitoring' && (
+                <MonitoringChangesView
+                  comparisonResult={comparisonResult}
+                  changes={changesList}
+                  onCompareScans={handleCompareScans}
+                  loading={runningCompare}
+                  error={changeError}
+                  baselineScanId={selectedBaselineScan}
+                  onChangeBaselineScanId={setSelectedBaselineScan}
+                  currentScanId={selectedCurrentScan}
+                  onChangeCurrentScanId={setSelectedCurrentScan}
+                  selectedChange={selectedChangeRecord}
+                  onSelectChange={setSelectedChangeRecord}
+                />
+              )}
+
+              {activeTab === 'scans' && (
+                <ScanRunsView
+                  investigation={selectedInv}
+                  scanRuns={scanRuns}
+                  onRefreshScans={handleLoadScans}
+                  onRunCT={handleRunCT}
+                  onRunResolve={handleRunResolve}
+                  onRunIPEnrich={handleRunIPEnrich}
+                  onRunFingerprint={handleRunFingerprint}
+                  onRunVulnCorrelate={handleRunVulnCorrelate}
+                  onRunFindings={handleGenerateFindings}
+                  runningCT={runningCT}
+                  runningResolve={runningResolve}
+                  runningIPEnrich={runningIPEnrich}
+                  runningFingerprint={runningFingerprint}
+                  runningVulnCorrelate={runningVulnCorrelate}
+                  runningFindings={runningFindings}
+                />
+              )}
+            </>
+          ) : (
+            <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
+              No active investigation selected. Create a new assessment using the sidebar button to begin.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* New Investigation Modal */}
+      <Modal
+        title="Create New Attack Surface Assessment"
+        isOpen={isNewInvModalOpen}
+        onClose={() => setIsNewInvModalOpen(false)}
+        maxWidth="520px"
+      >
+        <form onSubmit={handleCreateInvestigation} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {invError && <div className="alert alert-danger">{invError}</div>}
+
+          <div className="form-group">
+            <label className="form-label">Target Domain / Root FQDN</label>
+            <input
+              type="text"
+              required
+              className="form-input"
+              value={invDomain}
+              onChange={e => setInvDomain(e.target.value)}
+              placeholder="example.com"
+            />
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+              Enter a valid Fully Qualified Domain Name (e.g. corp.example.com).
             </span>
           </div>
-        </div>
-      </header>
 
-      {/* Auth Section if Not Logged In */}
-      {!token ? (
-        <div className="glass-panel" style={{ padding: '2rem', maxWidth: '480px', margin: '2rem auto' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.25rem' }}>
-            <Lock size={20} color="var(--cyan-400)" />
-            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>
-              {authMode === 'login' ? 'Analyst Authentication' : 'Register Analyst Account'}
-            </h2>
+          <div className="form-group">
+            <label className="form-label">Assessment Title</label>
+            <input
+              type="text"
+              required
+              className="form-input"
+              value={invName}
+              onChange={e => setInvName(e.target.value)}
+              placeholder="Q1 External Surface Audit"
+            />
           </div>
 
-          {authError && <div className="alert alert-error">{authError}</div>}
+          <div className="form-group">
+            <label className="form-label">Client / Organization Name (Optional)</label>
+            <input
+              type="text"
+              className="form-input"
+              value={invOrg}
+              onChange={e => setInvOrg(e.target.value)}
+              placeholder="Acme Corporation"
+            />
+          </div>
 
-          <form onSubmit={authMode === 'login' ? handleLogin : handleRegister}>
-            {authMode === 'register' && (
-              <>
-                <div className="form-group">
-                  <label className="form-label">Email Address</label>
-                  <input
-                    type="email"
-                    required
-                    className="form-input"
-                    value={authEmail}
-                    onChange={e => setAuthEmail(e.target.value)}
-                    placeholder="analyst@domain.com"
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Full Name</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={authFullName}
-                    onChange={e => setAuthFullName(e.target.value)}
-                    placeholder="Jane Analyst"
-                  />
-                </div>
-              </>
-            )}
-
-            <div className="form-group">
-              <label className="form-label">Username / Email</label>
-              <input
-                type="text"
-                required
-                className="form-input"
-                value={authUsername}
-                onChange={e => setAuthUsername(e.target.value)}
-                placeholder="analyst_jane"
-              />
-            </div>
-
-            <div className="form-group">
-              <label className="form-label">Password</label>
-              <input
-                type="password"
-                required
-                className="form-input"
-                value={authPassword}
-                onChange={e => setAuthPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </div>
-
-            <button type="submit" disabled={authLoading} className="btn btn-primary" style={{ width: '100%', marginTop: '0.5rem' }}>
-              {authLoading ? 'Authenticating...' : authMode === 'login' ? 'Sign In' : 'Create Account'}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', marginTop: '0.5rem' }}>
+            <button
+              type="button"
+              onClick={() => setIsNewInvModalOpen(false)}
+              className="btn btn-secondary"
+            >
+              Cancel
             </button>
-          </form>
-
-          <div style={{ textAlign: 'center', marginTop: '1rem', fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-            {authMode === 'login' ? (
-              <span>Need an account? <button onClick={() => { setAuthMode('register'); setAuthError(null); }} style={{ background: 'none', border: 'none', color: 'var(--cyan-400)', cursor: 'pointer', textDecoration: 'underline' }}>Register</button></span>
-            ) : (
-              <span>Already registered? <button onClick={() => { setAuthMode('login'); setAuthError(null); }} style={{ background: 'none', border: 'none', color: 'var(--cyan-400)', cursor: 'pointer', textDecoration: 'underline' }}>Sign In</button></span>
-            )}
+            <button
+              type="submit"
+              disabled={creatingInv}
+              className="btn btn-primary"
+            >
+              {creatingInv ? 'Creating...' : 'Initialize Assessment'}
+            </button>
           </div>
-        </div>
-      ) : (
-        /* Authenticated Stage 3A Flow */
-        <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: '1.5rem', alignItems: 'start' }}>
-          
-          {/* Left Column: Investigation Management */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            {/* Create Investigation Card */}
-            <div className="glass-panel" style={{ padding: '1.25rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                <Globe size={18} color="var(--cyan-400)" />
-                <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>New Investigation</h3>
-              </div>
-
-              {invError && <div className="alert alert-error" style={{ padding: '0.5rem', fontSize: '0.8rem' }}>{invError}</div>}
-
-              <form onSubmit={handleCreateInvestigation}>
-                <div className="form-group">
-                  <label className="form-label">Target Domain</label>
-                  <input
-                    type="text"
-                    required
-                    className="form-input"
-                    value={invDomain}
-                    onChange={e => setInvDomain(e.target.value)}
-                    placeholder="example.com"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Investigation Title</label>
-                  <input
-                    type="text"
-                    required
-                    className="form-input"
-                    value={invName}
-                    onChange={e => setInvName(e.target.value)}
-                    placeholder="Q1 Audit"
-                  />
-                </div>
-
-                <div className="form-group">
-                  <label className="form-label">Organization (Optional)</label>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={invOrg}
-                    onChange={e => setInvOrg(e.target.value)}
-                    placeholder="Acme Corp"
-                  />
-                </div>
-
-                <button type="submit" disabled={creatingInv} className="btn btn-primary" style={{ width: '100%' }}>
-                  {creatingInv ? 'Validating...' : 'Create Assessment'}
-                </button>
-              </form>
-            </div>
-
-            {/* Investigations List */}
-            <div className="glass-panel" style={{ padding: '1.25rem' }}>
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '0.75rem' }}>
-                Active Investigations ({investigations.length})
-              </h3>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '280px', overflowY: 'auto' }}>
-                {investigations.map(inv => (
-                  <div
-                    key={inv.id}
-                    onClick={() => { setSelectedInv(inv); setCTResult(null); }}
-                    style={{
-                      padding: '0.75rem',
-                      borderRadius: '8px',
-                      cursor: 'pointer',
-                      background: selectedInv?.id === inv.id ? 'rgba(14, 165, 233, 0.15)' : 'rgba(15, 23, 42, 0.4)',
-                      border: `1px solid ${selectedInv?.id === inv.id ? 'var(--cyan-400)' : 'var(--border-subtle)'}`,
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.25rem' }}>
-                      <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>{inv.target_domain}</span>
-                      <span className="badge badge-neutral" style={{ fontSize: '0.65rem', padding: '0.1rem 0.35rem' }}>{inv.status}</span>
-                    </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{inv.reference_code}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column: CT Discovery, Active Resolution & Discovered Assets */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            {selectedInv ? (
-              <>
-                {/* Active Investigation Control Banner */}
-                <div className="glass-panel" style={{ padding: '1.5rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                        <span className="badge badge-neutral font-mono">{selectedInv.reference_code}</span>
-                        <span className="badge badge-success">{selectedInv.status}</span>
-                      </div>
-                      <h2 style={{ fontSize: '1.35rem', fontWeight: 700 }}>{selectedInv.target_domain}</h2>
-                      <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{selectedInv.title}</p>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                      <button
-                        onClick={handleRunCT}
-                        disabled={runningCT || runningResolve}
-                        className="btn btn-secondary"
-                        style={{ padding: '0.65rem 1.25rem' }}
-                      >
-                        <Search size={15} className={runningCT ? 'spin' : ''} style={{ animation: runningCT ? 'spin 1s linear infinite' : 'none' }} />
-                        <span>{runningCT ? 'Scanning CT Logs...' : '1. Discover CT'}</span>
-                      </button>
-
-                      <button
-                        onClick={handleRunResolve}
-                        disabled={runningResolve || runningCT || runningIPEnrich || assets.length === 0}
-                        className="btn btn-primary"
-                        style={{ padding: '0.65rem 1.25rem' }}
-                      >
-                        <Radio size={15} className={runningResolve ? 'spin' : ''} style={{ animation: runningResolve ? 'spin 1s linear infinite' : 'none' }} />
-                        <span>{runningResolve ? 'Probing DNS & HTTP...' : '2. Run DNS & Reachability'}</span>
-                      </button>
-
-                      <button
-                        onClick={handleRunIPEnrich}
-                        disabled={runningIPEnrich || runningResolve || runningCT || dnsRecords.length === 0}
-                        className="btn btn-secondary"
-                        style={{ padding: '0.65rem 1.25rem' }}
-                      >
-                        <Network size={15} className={runningIPEnrich ? 'spin' : ''} style={{ animation: runningIPEnrich ? 'spin 1s linear infinite' : 'none' }} />
-                        <span>{runningIPEnrich ? 'Enriching IPs...' : '3. Run IP Intelligence'}</span>
-                      </button>
-
-                      <button
-                        onClick={handleRunFingerprint}
-                        disabled={runningFingerprint || runningIPEnrich || runningResolve || runningCT || assets.length === 0}
-                        className="btn btn-secondary"
-                        style={{ padding: '0.65rem 1.25rem' }}
-                      >
-                        <Cpu size={15} className={runningFingerprint ? 'spin' : ''} style={{ animation: runningFingerprint ? 'spin 1s linear infinite' : 'none' }} />
-                        <span>{runningFingerprint ? 'Fingerprinting Web Services...' : '4. Technology & Security'}</span>
-                      </button>
-
-                      <button
-                        onClick={handleRunVulnCorrelate}
-                        disabled={runningVulnCorrelate || runningFingerprint || runningIPEnrich || runningResolve || runningCT || technologies.length === 0}
-                        className="btn btn-primary"
-                        style={{ padding: '0.65rem 1.25rem' }}
-                      >
-                        <Flame size={15} className={runningVulnCorrelate ? 'spin' : ''} style={{ animation: runningVulnCorrelate ? 'spin 1s linear infinite' : 'none' }} />
-                        <span>{runningVulnCorrelate ? 'Correlating CVEs & KEV...' : '5. Vulnerability Intelligence'}</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {ctError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ctError}</div>}
-                  {resolveError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{resolveError}</div>}
-                  {ipEnrichError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{ipEnrichError}</div>}
-                  {fingerprintError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{fingerprintError}</div>}
-                  {vulnError && <div className="alert alert-error" style={{ marginTop: '1rem' }}>{vulnError}</div>}
-                </div>
-
-                {/* DNS & Reachability Metrics Grid (if resolution executed) */}
-                {resolveResult && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Processed</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.candidates_processed}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Resolved</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{resolveResult.resolved}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--red-400)' }}>Unresolved</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--red-400)' }}>{resolveResult.not_resolved}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>Reachable</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{resolveResult.reachable}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>DNS Records</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.dns_records_discovered}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Services</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{resolveResult.services_discovered}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Stage 4 IP / ASN / RDAP Enrichment Metrics Grid */}
-                {ipEnrichResult && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>IPs Processed</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{ipEnrichResult.ips_processed}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Public IPs</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{ipEnrichResult.public_ips}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Skipped (Private)</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{ipEnrichResult.skipped_non_public}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>ASN Enriched</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{ipEnrichResult.asn_success}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>RDAP Enriched</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{ipEnrichResult.rdap_success}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Stage 5 Technology & Security Fingerprint Metrics Grid */}
-                {fingerprintResult && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Probed Services</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{fingerprintResult.services_processed}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(16, 185, 129, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Reachable HTTP/S</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)' }}>{fingerprintResult.reachable}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>Techs Detected</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{fingerprintResult.technologies_detected}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Security Headers</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{fingerprintResult.security_headers_analyzed}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>TLS Sessions</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{fingerprintResult.tls_observations}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Stage 6 Vulnerability Intelligence & CVE Correlation Metrics Grid */}
-                {vulnResult && (
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0.75rem' }}>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Techs Analyzed</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700 }}>{vulnResult.technologies_analyzed}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(56, 189, 248, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--cyan-400)' }}>CVEs Correlated</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--cyan-400)' }}>{vulnResult.cves_correlated}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--amber-400)' }}>Potential Matches</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--amber-400)' }}>{vulnResult.potential_matches}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(239, 68, 68, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--red-400)' }}>CISA KEV Listed</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--red-400)' }}>{vulnResult.kev_listed_cves}</div>
-                    </div>
-                    <div className="glass-panel" style={{ padding: '0.85rem', textAlign: 'center', borderColor: 'rgba(168, 85, 247, 0.3)' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--purple-400)' }}>Requires Verification</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--purple-400)' }}>{vulnResult.requires_verification}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Discovered Candidate Hostnames Table */}
-                <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <Layers size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Discovered Assets ({assets.length})</h3>
-                    </div>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
-                      {ctResult && (
-                        <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
-                          CT: {ctResult.certificate_count} certs
-                        </span>
-                      )}
-                      {dnsRecords.length > 0 && (
-                        <span className="badge badge-success" style={{ fontSize: '0.75rem' }}>
-                          DNS: {dnsRecords.length} records
-                        </span>
-                      )}
-                      {services.length > 0 && (
-                        <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                          HTTP/S: {services.length} services
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  {assets.length === 0 ? (
-                    <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                      No discovery executed yet for this investigation. Click <strong>"1. Discover CT"</strong> above to retrieve public certificate candidates.
-                    </div>
-                  ) : (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Hostname / Asset</th>
-                            <th>Type</th>
-                            <th>DNS Status</th>
-                            <th>Reachability</th>
-                            <th>Source</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {assets.map(asset => {
-                            const candidateDetail = resolveResult?.results.find(r => r.hostname === asset.value);
-                            const isResolving = asset.is_active || candidateDetail?.is_resolving;
-                            const isReachable = candidateDetail?.is_reachable;
-
-                            return (
-                              <tr key={asset.id}>
-                                <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>
-                                  {asset.value}
-                                </td>
-                                <td>
-                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                    {asset.asset_type}
-                                  </span>
-                                </td>
-                                <td>
-                                  {isResolving ? (
-                                    <span className="badge badge-success" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                                      <CheckCircle2 size={11} /> Resolving
-                                    </span>
-                                  ) : (
-                                    <span className="badge badge-warning" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                                      <XCircle size={11} /> Unresolved Candidate
-                                    </span>
-                                  )}
-                                </td>
-                                <td>
-                                  {isReachable ? (
-                                    <span className="badge badge-info" style={{ fontSize: '0.7rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-                                      <Activity size={11} /> Live HTTP/S
-                                    </span>
-                                  ) : isResolving ? (
-                                    <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                      No HTTP
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
-                                  )}
-                                </td>
-                                <td style={{ color: 'var(--text-secondary)' }}>
-                                  {asset.source}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-
-                {/* Discovered DNS Records Section */}
-                {dnsRecords.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                      <Radio size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                        Active DNS Resource Records ({dnsRecords.length})
-                      </h3>
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Record Type</th>
-                            <th>Value</th>
-                            <th>TTL</th>
-                            <th>Resolver</th>
-                            <th>Collected At</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {dnsRecords.map(rec => (
-                            <tr key={rec.id}>
-                              <td>
-                                <span className="badge badge-neutral font-mono" style={{ fontSize: '0.75rem', fontWeight: 700 }}>
-                                  {rec.record_type}
-                                </span>
-                              </td>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
-                                {rec.value}
-                              </td>
-                              <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                                {rec.ttl ? `${rec.ttl}s` : '—'}
-                              </td>
-                              <td style={{ color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
-                                {rec.resolver}
-                              </td>
-                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                                {new Date(rec.collected_at).toLocaleTimeString()}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Discovered Service Exposures Section */}
-                {services.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                      <Server size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                        Live Service Exposures ({services.length})
-                      </h3>
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Port / Protocol</th>
-                            <th>Service</th>
-                            <th>HTTP Status</th>
-                            <th>Page Title</th>
-                            <th>Observed</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {services.map(svc => (
-                            <tr key={svc.id}>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                                {svc.port}/{svc.protocol}
-                              </td>
-                              <td>
-                                <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
-                                  {svc.service_name}
-                                </span>
-                              </td>
-                              <td>
-                                <span className={`badge ${svc.http_status && svc.http_status < 400 ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.75rem' }}>
-                                  {svc.http_status ?? 'N/A'}
-                                </span>
-                              </td>
-                              <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                                {svc.page_title || '—'}
-                              </td>
-                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                                {new Date(svc.observed_at).toLocaleTimeString()}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Discovered IP Addresses & Network Intelligence Section (Stage 4) */}
-                {ipAddresses.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <Globe size={18} color="var(--cyan-400)" />
-                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                          Discovered IP Addresses & Network Intelligence ({ipAddresses.length})
-                        </h3>
-                      </div>
-                      {asns.length > 0 && (
-                        <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                          {asns.length} Distinct Autonomous Systems
-                        </span>
-                      )}
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '340px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>IP Address</th>
-                            <th>Type</th>
-                            <th>ASN</th>
-                            <th>Organization / Network</th>
-                            <th>Allocated Prefix</th>
-                            <th>Country</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {ipAddresses.map(ip => (
-                            <tr key={ip.id}>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                                {ip.ip_address}
-                              </td>
-                              <td>
-                                <span className="badge badge-neutral font-mono" style={{ fontSize: '0.7rem' }}>
-                                  IPv{ip.ip_version}
-                                </span>
-                              </td>
-                              <td>
-                                {ip.asn ? (
-                                  <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
-                                    AS{ip.asn.asn_number}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
-                                )}
-                              </td>
-                              <td style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                                {ip.organization || ip.asn?.name || '—'}
-                              </td>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                                {ip.asn?.allocated_prefix || '—'}
-                              </td>
-                              <td>
-                                {ip.country ? (
-                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                    {ip.country}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Observed Technology Fingerprints Section (Stage 5) */}
-                {technologies.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <Code2 size={18} color="var(--cyan-400)" />
-                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                          Observed Technology Fingerprints ({technologies.length})
-                        </h3>
-                      </div>
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '340px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Asset / Hostname</th>
-                            <th>Technology</th>
-                            <th>Category</th>
-                            <th>Version</th>
-                            <th>Confidence</th>
-                            <th>Detection Evidence</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {technologies.map(tech => (
-                            <tr key={tech.id}>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                                {tech.asset_value || '—'}
-                              </td>
-                              <td style={{ fontWeight: 600, color: 'var(--cyan-400)' }}>
-                                {tech.name}
-                              </td>
-                              <td>
-                                <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                  {tech.category}
-                                </span>
-                              </td>
-                              <td>
-                                {tech.version ? (
-                                  <span className="badge badge-success font-mono" style={{ fontSize: '0.75rem' }}>
-                                    {tech.version}
-                                  </span>
-                                ) : (
-                                  <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Not observable</span>
-                                )}
-                              </td>
-                              <td>
-                                <span className="badge badge-info" style={{ fontSize: '0.7rem' }}>
-                                  {(tech.confidence * 100).toFixed(0)}%
-                                </span>
-                              </td>
-                              <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                                {tech.evidence_source}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* HTTP Security Headers Analysis Section (Stage 5) */}
-                {securityHeaders.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <ShieldCheck size={18} color="var(--cyan-400)" />
-                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                          HTTP Security Headers Analysis ({securityHeaders.length} Services)
-                        </h3>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                      {securityHeaders.map(svcHeader => (
-                        <div
-                          key={svcHeader.service_id}
-                          style={{
-                            background: 'rgba(15, 23, 42, 0.5)',
-                            border: '1px solid var(--border-subtle)',
-                            borderRadius: '8px',
-                            padding: '1rem',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap', gap: '0.5rem' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                              <span style={{ fontWeight: 600, color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
-                                {svcHeader.url}
-                              </span>
-                              <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                {svcHeader.port}/{svcHeader.protocol}
-                              </span>
-                              {svcHeader.http_status && (
-                                <span className={`badge ${svcHeader.http_status < 400 ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.7rem' }}>
-                                  HTTP {svcHeader.http_status}
-                                </span>
-                              )}
-                            </div>
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                              Observed: {new Date(svcHeader.observed_at).toLocaleTimeString()}
-                            </span>
-                          </div>
-
-                          <div style={{ overflowX: 'auto' }}>
-                            <table className="data-table" style={{ fontSize: '0.8rem' }}>
-                              <thead>
-                                <tr>
-                                  <th>Security Header</th>
-                                  <th>Status</th>
-                                  <th>Observed Interpretation / Value</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {Object.entries(svcHeader.headers).map(([k, h]) => (
-                                  <tr key={k}>
-                                    <td style={{ fontWeight: 600, fontFamily: 'var(--font-mono)' }}>{h.header_name}</td>
-                                    <td>
-                                      <span className={`badge ${h.present ? 'badge-success' : 'badge-warning'}`} style={{ fontSize: '0.7rem' }}>
-                                        {h.present ? 'Present' : 'Missing'}
-                                      </span>
-                                    </td>
-                                    <td style={{ color: h.present ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                                      {h.interpretation} {h.value ? `("${h.value}")` : ''}
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* TLS Metadata Section (Stage 5) */}
-                {tlsMetadata.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                      <Lock size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                        Observed TLS Session & Protocol Metadata ({tlsMetadata.length})
-                      </h3>
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '280px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>Endpoint URL</th>
-                            <th>TLS Protocol</th>
-                            <th>Observed</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {tlsMetadata.map((tls, idx) => (
-                            <tr key={idx}>
-                              <td style={{ fontFamily: 'var(--font-mono)', fontWeight: 600 }}>
-                                {tls.url}
-                              </td>
-                              <td>
-                                <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
-                                  {tls.tls_version || 'TLS'}
-                                </span>
-                              </td>
-                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                                {new Date(tls.observed_at).toLocaleTimeString()}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* Vulnerability Intelligence & CVE Correlation Section (Stage 6) */}
-                {vulnerabilities.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                        <Flame size={18} color="var(--cyan-400)" />
-                        <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                          Vulnerability Intelligence & CVE Correlation ({vulnerabilities.length})
-                        </h3>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                        <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', cursor: 'pointer', color: 'var(--text-secondary)' }}>
-                          <input
-                            type="checkbox"
-                            checked={filterKevOnly}
-                            onChange={e => setFilterKevOnly(e.target.checked)}
-                          />
-                          <span style={{ color: filterKevOnly ? 'var(--red-400)' : 'inherit', fontWeight: filterKevOnly ? 600 : 400 }}>
-                            CISA KEV Listed Only ({vulnerabilities.filter(v => v.is_kev).length})
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-
-                    {/* Passive Correlation Disclaimer Alert */}
-                    <div style={{
-                      background: 'rgba(30, 41, 59, 0.6)',
-                      border: '1px solid rgba(56, 189, 248, 0.25)',
-                      borderRadius: '8px',
-                      padding: '0.75rem 1rem',
-                      marginBottom: '1rem',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.75rem',
-                      fontSize: '0.8rem',
-                      color: 'var(--text-secondary)'
-                    }}>
-                      <AlertTriangle size={18} color="var(--amber-400)" style={{ flexShrink: 0 }} />
-                      <div>
-                        <strong style={{ color: 'var(--text-primary)' }}>Passive Intelligence Disclaimer: </strong>
-                        Correlated CVEs represent potential vulnerabilities based on passive technology fingerprinting and CPE/version mapping. These matches do not constitute proof of active exploitability or confirmed compromise. Verification is required.
-                      </div>
-                    </div>
-
-                    <div style={{ overflowX: 'auto', maxHeight: '420px' }}>
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>CVE ID</th>
-                            <th>Observed Technology</th>
-                            <th>Observed Version</th>
-                            <th>Severity / CVSS</th>
-                            <th>CISA KEV</th>
-                            <th>Correlation Status</th>
-                            <th>Match Basis & CPE</th>
-                            <th>Intelligence Source</th>
-                            <th>Published</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {vulnerabilities
-                            .filter(v => !filterKevOnly || v.is_kev)
-                            .map((v, idx) => (
-                              <tr key={idx}>
-                                <td>
-                                  <a
-                                    href={`https://nvd.nist.gov/vuln/detail/${v.cve_id}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{
-                                      fontWeight: 700,
-                                      fontFamily: 'var(--font-mono)',
-                                      color: 'var(--cyan-400)',
-                                      textDecoration: 'none'
-                                    }}
-                                  >
-                                    {v.cve_id}
-                                  </a>
-                                </td>
-                                <td style={{ fontWeight: 600 }}>
-                                  {v.technology_name}
-                                </td>
-                                <td>
-                                  {v.observed_version ? (
-                                    <span className="badge badge-success font-mono" style={{ fontSize: '0.75rem' }}>
-                                      {v.observed_version}
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Unspecified</span>
-                                  )}
-                                </td>
-                                <td>
-                                  {v.severity ? (
-                                    <span
-                                      className={`badge ${
-                                        v.severity === 'CRITICAL' ? 'badge-danger' :
-                                        v.severity === 'HIGH' ? 'badge-danger' :
-                                        v.severity === 'MEDIUM' ? 'badge-warning' : 'badge-neutral'
-                                      }`}
-                                      style={{ fontSize: '0.7rem' }}
-                                    >
-                                      {v.severity} {v.cvss_score ? `(${v.cvss_score})` : ''}
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>N/A</span>
-                                  )}
-                                </td>
-                                <td>
-                                  {v.is_kev ? (
-                                    <span
-                                      className="badge badge-danger"
-                                      style={{
-                                        fontSize: '0.7rem',
-                                        display: 'inline-flex',
-                                        alignItems: 'center',
-                                        gap: '0.25rem',
-                                        fontWeight: 700
-                                      }}
-                                      title={v.kev_details ? `Required Action: ${v.kev_details.required_action || 'N/A'}` : 'Listed in CISA KEV'}
-                                    >
-                                      <Flame size={12} /> KEV Listed
-                                      {v.kev_details?.ransomware_campaign === 'Known' && ' (Ransomware)'}
-                                    </span>
-                                  ) : (
-                                    <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>No</span>
-                                  )}
-                                </td>
-                                <td>
-                                  <span
-                                    className={`badge ${
-                                      v.correlation_status === 'POTENTIAL_MATCH' ? 'badge-warning' :
-                                      v.correlation_status === 'REQUIRES_VERIFICATION' ? 'badge-neutral' :
-                                      'badge-info'
-                                    }`}
-                                    style={{ fontSize: '0.7rem', fontFamily: 'var(--font-mono)' }}
-                                  >
-                                    {v.correlation_status}
-                                  </span>
-                                </td>
-                                <td style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={v.match_basis || ''}>
-                                  {v.match_basis || '—'}
-                                </td>
-                                <td>
-                                  <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                    {v.source}
-                                  </span>
-                                </td>
-                                <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                  {v.published_date ? new Date(v.published_date).toLocaleDateString() : '—'}
-                                </td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-
-                {/* 6. Attack Surface Relationship Graph & Correlation Section */}
-                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid #a855f7' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ background: 'rgba(168, 85, 247, 0.15)', padding: '0.6rem', borderRadius: '10px', color: '#c084fc' }}>
-                        <Share2 size={22} />
-                      </div>
-                      <div>
-                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                          6. Attack Surface Relationship Graph & Correlation
-                        </h2>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                          Deterministic, scan-isolated correlation connecting Domains, Subdomains, IPs, ASNs, Services, Tech, and CVEs
-                        </p>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Filter size={14} color="var(--text-muted)" />
-                        <select
-                          className="input"
-                          value={filterNodeType}
-                          onChange={e => setFilterNodeType(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Node Types</option>
-                          <option value="domain">Domain</option>
-                          <option value="subdomain">Subdomain</option>
-                          <option value="ip">IP Address</option>
-                          <option value="asn">ASN</option>
-                          <option value="service">Service Exposure</option>
-                          <option value="technology">Technology</option>
-                          <option value="vulnerability">Vulnerability</option>
-                          <option value="certificate">Certificate</option>
-                        </select>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <select
-                          className="input"
-                          value={filterRelType}
-                          onChange={e => setFilterRelType(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Relationships</option>
-                          <option value="CONTAINS">CONTAINS</option>
-                          <option value="RESOLVES_TO">RESOLVES_TO</option>
-                          <option value="ANNOUNCED_BY">ANNOUNCED_BY</option>
-                          <option value="EXPOSES">EXPOSES</option>
-                          <option value="USES_TECHNOLOGY">USES_TECHNOLOGY</option>
-                          <option value="AFFECTED_BY">AFFECTED_BY</option>
-                          <option value="HAS_CERTIFICATE">HAS_CERTIFICATE</option>
-                        </select>
-                      </div>
-
-                      <button
-                        className="btn btn-primary"
-                        onClick={handleLoadGraph}
-                        disabled={runningGraph || !selectedInv}
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #9333ea, #a855f7)' }}
-                      >
-                        <Share2 size={16} className={runningGraph ? 'animate-spin' : ''} />
-                        {runningGraph ? 'Correlating...' : 'Build / Refresh Graph'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {graphError && (
-                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <XCircle size={16} />
-                      <span>{graphError}</span>
-                    </div>
-                  )}
-
-                  {graphData && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                      {/* Summary Statistics Strip */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0.75rem' }}>
-                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Graph Nodes</div>
-                          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#c084fc', marginTop: '0.2rem' }}>
-                            {graphData.statistics.node_count}
-                          </div>
-                        </div>
-
-                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Edges</div>
-                          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: 'var(--cyan-400)', marginTop: '0.2rem' }}>
-                            {graphData.statistics.edge_count}
-                          </div>
-                        </div>
-
-                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Scan Attribution</div>
-                          <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--emerald-400)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
-                            {graphData.scan_run_number ? `Run #${graphData.scan_run_number}` : 'Latest Snapshot'}
-                          </div>
-                        </div>
-
-                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Target Domain</div>
-                          <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
-                            {graphData.target_domain}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Type Badges Breakdown */}
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', alignItems: 'center' }}>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Nodes by Type:</span>
-                        {Object.entries(graphData.statistics.nodes_by_type).map(([type, count]) => (
-                          <span
-                            key={type}
-                            className="badge badge-neutral"
-                            style={{ fontSize: '0.75rem', cursor: 'pointer' }}
-                            onClick={() => setFilterNodeType(type)}
-                          >
-                            <span style={{ textTransform: 'capitalize', color: 'var(--cyan-400)' }}>{type}</span>: {count}
-                          </span>
-                        ))}
-
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, marginLeft: '0.5rem' }}>Edges:</span>
-                        {Object.entries(graphData.statistics.edges_by_type).map(([rel, count]) => (
-                          <span
-                            key={rel}
-                            className="badge badge-neutral"
-                            style={{ fontSize: '0.75rem', cursor: 'pointer' }}
-                            onClick={() => setFilterRelType(rel)}
-                          >
-                            <span style={{ color: '#c084fc' }}>{rel}</span>: {count}
-                          </span>
-                        ))}
-                      </div>
-
-                      {/* Graph Explorer & Inspector */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: '1rem', alignItems: 'start' }}>
-                        {/* Left: Nodes & Edges Explorer */}
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                          {/* Nodes Explorer */}
-                          <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                              <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                Graph Nodes ({graphData.nodes.length})
-                              </h4>
-                              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click node to inspect metadata</span>
-                            </div>
-
-                            <div style={{ maxHeight: '280px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                              {graphData.nodes.map(node => {
-                                const isSelected = selectedGraphNode?.id === node.id;
-                                const typeColor =
-                                  node.type === 'domain' ? 'var(--cyan-400)' :
-                                  node.type === 'subdomain' ? 'var(--blue-400)' :
-                                  node.type === 'ip' ? 'var(--emerald-400)' :
-                                  node.type === 'asn' ? '#fbbf24' :
-                                  node.type === 'service' ? '#38bdf8' :
-                                  node.type === 'technology' ? '#a78bfa' :
-                                  node.type === 'vulnerability' ? 'var(--rose-400)' :
-                                  '#f472b6';
-
-                                return (
-                                  <div
-                                    key={node.id}
-                                    onClick={() => setSelectedGraphNode(node)}
-                                    style={{
-                                      display: 'flex',
-                                      alignItems: 'center',
-                                      justifyContent: 'space-between',
-                                      padding: '0.5rem 0.75rem',
-                                      borderRadius: '6px',
-                                      background: isSelected ? 'rgba(168, 85, 247, 0.2)' : 'rgba(30, 41, 59, 0.5)',
-                                      border: isSelected ? '1px solid #a855f7' : '1px solid var(--border-subtle)',
-                                      cursor: 'pointer',
-                                      transition: 'all 0.15s ease',
-                                    }}
-                                  >
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: 0 }}>
-                                      <span
-                                        className="badge"
-                                        style={{
-                                          fontSize: '0.65rem',
-                                          background: 'rgba(0,0,0,0.3)',
-                                          color: typeColor,
-                                          border: `1px solid ${typeColor}`,
-                                          padding: '0.1rem 0.4rem',
-                                        }}
-                                      >
-                                        {node.type.toUpperCase()}
-                                      </span>
-                                      <span style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                        {node.label}
-                                      </span>
-                                    </div>
-                                    <Eye size={14} color={isSelected ? '#c084fc' : 'var(--text-muted)'} />
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-
-                          {/* Relationships / Edges Explorer */}
-                          <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                              <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                Correlated Edges ({graphData.edges.length})
-                              </h4>
-                            </div>
-
-                            <div style={{ maxHeight: '280px', overflowY: 'auto' }}>
-                              <table className="table" style={{ fontSize: '0.8rem' }}>
-                                <thead>
-                                  <tr>
-                                    <th>Source</th>
-                                    <th>Relationship</th>
-                                    <th>Target</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {graphData.edges.map(edge => (
-                                    <tr key={edge.id}>
-                                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                                        {edge.source}
-                                      </td>
-                                      <td>
-                                        <span
-                                          className="badge"
-                                          style={{
-                                            fontSize: '0.65rem',
-                                            background: 'rgba(168, 85, 247, 0.15)',
-                                            color: '#c084fc',
-                                            border: '1px solid rgba(168, 85, 247, 0.3)',
-                                            fontFamily: 'var(--font-mono)',
-                                          }}
-                                        >
-                                          {edge.relationship_type}
-                                        </span>
-                                      </td>
-                                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--cyan-400)' }}>
-                                        {edge.target}
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Right: Selected Node Inspector Panel */}
-                        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
-                            <GitFork size={18} color="#c084fc" />
-                            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                              Node Inspector
-                            </h4>
-                          </div>
-
-                          {selectedGraphNode ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                              <div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Node Identifier</div>
-                                <div style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', color: '#c084fc', wordBreak: 'break-all' }}>
-                                  {selectedGraphNode.id}
-                                </div>
-                              </div>
-
-                              <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
-                                <div>
-                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Type</div>
-                                  <span className="badge badge-info" style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
-                                    {selectedGraphNode.type.toUpperCase()}
-                                  </span>
-                                </div>
-                                {selectedGraphNode.asset_id && (
-                                  <div>
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Asset UUID</div>
-                                    <div style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                                      {selectedGraphNode.asset_id}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-
-                              <div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Display Label</div>
-                                <div style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
-                                  {selectedGraphNode.label}
-                                </div>
-                              </div>
-
-                              <div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.4rem' }}>Node Metadata</div>
-                                <pre
-                                  style={{
-                                    background: 'rgba(0, 0, 0, 0.4)',
-                                    padding: '0.75rem',
-                                    borderRadius: '6px',
-                                    fontSize: '0.75rem',
-                                    fontFamily: 'var(--font-mono)',
-                                    color: 'var(--text-secondary)',
-                                    maxHeight: '300px',
-                                    overflowY: 'auto',
-                                    whiteSpace: 'pre-wrap',
-                                    wordBreak: 'break-all',
-                                  }}
-                                >
-                                  {JSON.stringify(selectedGraphNode.metadata, null, 2)}
-                                </pre>
-                              </div>
-                            </div>
-                          ) : (
-                            <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2rem 0' }}>
-                              Select a node from the list to view its deterministic attributes.
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* 7. Findings & Contextual Risk Assessment Section */}
-                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid var(--rose-500)' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ background: 'rgba(244, 63, 94, 0.15)', padding: '0.6rem', borderRadius: '10px', color: 'var(--rose-400)' }}>
-                        <ShieldAlert size={22} />
-                      </div>
-                      <div>
-                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                          7. Findings & Contextual Risk Assessment
-                        </h2>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                          Evidence-backed security findings with transparent, explainable contextual risk scoring (0-100)
-                        </p>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Filter size={14} color="var(--text-muted)" />
-                        <select
-                          className="input"
-                          value={filterFindingSeverity}
-                          onChange={e => setFilterFindingSeverity(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Severities</option>
-                          <option value="CRITICAL">Critical</option>
-                          <option value="HIGH">High</option>
-                          <option value="MEDIUM">Medium</option>
-                          <option value="LOW">Low</option>
-                          <option value="INFO">Informational</option>
-                        </select>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <select
-                          className="input"
-                          value={filterFindingType}
-                          onChange={e => setFilterFindingType(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Finding Types</option>
-                          <option value="VULNERABILITY">Vulnerability</option>
-                          <option value="SECURITY_HEADER">Security Header</option>
-                          <option value="TLS_SECURITY">TLS Security</option>
-                          <option value="SERVICE_EXPOSURE">Service Exposure</option>
-                        </select>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <select
-                          className="input"
-                          value={filterFindingStatus}
-                          onChange={e => setFilterFindingStatus(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Statuses</option>
-                          <option value="open">Open</option>
-                          <option value="acknowledged">Acknowledged</option>
-                          <option value="resolved">Resolved</option>
-                          <option value="suppressed">Suppressed</option>
-                        </select>
-                      </div>
-
-                      <button
-                        className="btn btn-primary"
-                        onClick={handleGenerateFindings}
-                        disabled={runningFindings || !selectedInv}
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #e11d48, #f43f5e)' }}
-                      >
-                        <Zap size={16} className={runningFindings ? 'animate-spin' : ''} />
-                        {runningFindings ? 'Analyzing Risk...' : 'Generate Findings & Risk'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {findingError && (
-                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <XCircle size={16} />
-                      <span>{findingError}</span>
-                    </div>
-                  )}
-
-                  {/* Summary Metric Strip */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Findings</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
-                        {findingsList.length}
-                      </div>
-                    </div>
-
-                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)' }}>Critical Severity</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.2rem' }}>
-                        {findingsList.filter(f => f.severity === 'CRITICAL').length}
-                      </div>
-                    </div>
-
-                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(249, 115, 22, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                      <div style={{ fontSize: '0.75rem', color: '#fb923c' }}>High Severity</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#fb923c', marginTop: '0.2rem' }}>
-                        {findingsList.filter(f => f.severity === 'HIGH').length}
-                      </div>
-                    </div>
-
-                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(234, 179, 8, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                      <div style={{ fontSize: '0.75rem', color: '#facc15' }}>Medium / Low</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#facc15', marginTop: '0.2rem' }}>
-                        {findingsList.filter(f => f.severity === 'MEDIUM' || f.severity === 'LOW').length}
-                      </div>
-                    </div>
-
-                    <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>CISA KEV Listed</div>
-                      <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#f43f5e', marginTop: '0.2rem' }}>
-                        {findingsList.filter(f => f.is_kev).length}
-                      </div>
-                    </div>
-                  </div>
-
-                  {findingsList.length > 0 ? (
-                    /* Findings Split Explorer & Inspector */
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1rem', alignItems: 'start' }}>
-                      {/* Left: Findings List */}
-                      <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                          <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                            Correlated Security Findings ({findingsList.length})
-                          </h4>
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click finding to inspect risk factors</span>
-                        </div>
-
-                        <div style={{ maxHeight: '420px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                          {findingsList.map(finding => {
-                            const isSelected = selectedFinding?.id === finding.id;
-                            const sevColor = 
-                              finding.severity === 'CRITICAL' ? 'var(--rose-400)' :
-                              finding.severity === 'HIGH' ? '#fb923c' :
-                              finding.severity === 'MEDIUM' ? '#facc15' :
-                              finding.severity === 'LOW' ? 'var(--cyan-400)' :
-                              'var(--text-muted)';
-
-                            const riskCatBg =
-                              finding.risk_category === 'CRITICAL' ? 'rgba(244, 63, 94, 0.2)' :
-                              finding.risk_category === 'HIGH' ? 'rgba(251, 146, 60, 0.2)' :
-                              finding.risk_category === 'MEDIUM' ? 'rgba(250, 204, 21, 0.2)' :
-                              'rgba(56, 189, 248, 0.2)';
-
-                            const riskCatColor =
-                              finding.risk_category === 'CRITICAL' ? '#f43f5e' :
-                              finding.risk_category === 'HIGH' ? '#fb923c' :
-                              finding.risk_category === 'MEDIUM' ? '#facc15' :
-                              '#38bdf8';
-
-                            return (
-                              <div
-                                key={finding.id}
-                                onClick={() => setSelectedFinding(finding)}
-                                style={{
-                                  padding: '0.75rem',
-                                  borderRadius: '8px',
-                                  background: isSelected ? 'rgba(244, 63, 94, 0.12)' : 'rgba(30, 41, 59, 0.45)',
-                                  border: isSelected ? '1px solid var(--rose-500)' : '1px solid var(--border-subtle)',
-                                  cursor: 'pointer',
-                                  transition: 'all 0.15s ease',
-                                  display: 'flex',
-                                  flexDirection: 'column',
-                                  gap: '0.4rem',
-                                }}
-                              >
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', minWidth: 0 }}>
-                                    <span
-                                      className="badge"
-                                      style={{
-                                        fontSize: '0.65rem',
-                                        background: 'rgba(0,0,0,0.3)',
-                                        color: sevColor,
-                                        border: `1px solid ${sevColor}`,
-                                        padding: '0.1rem 0.4rem',
-                                        fontWeight: 600,
-                                      }}
-                                    >
-                                      {finding.severity}
-                                    </span>
-                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                                      {finding.reference_code}
-                                    </span>
-                                  </div>
-
-                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                    {finding.is_kev && (
-                                      <span
-                                        className="badge"
-                                        style={{
-                                          fontSize: '0.65rem',
-                                          background: 'rgba(244, 63, 94, 0.25)',
-                                          color: '#f43f5e',
-                                          border: '1px solid #f43f5e',
-                                          padding: '0.1rem 0.35rem',
-                                          fontWeight: 700,
-                                        }}
-                                      >
-                                        CISA KEV
-                                      </span>
-                                    )}
-                                    <span
-                                      className="badge"
-                                      style={{
-                                        fontSize: '0.7rem',
-                                        background: riskCatBg,
-                                        color: riskCatColor,
-                                        border: `1px solid ${riskCatColor}`,
-                                        fontWeight: 700,
-                                      }}
-                                    >
-                                      Risk {finding.context_score}/100
-                                    </span>
-                                  </div>
-                                </div>
-
-                                <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                  {finding.title}
-                                </div>
-
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                  <span>{finding.asset?.value || 'Asset'}</span>
-                                  <span style={{ textTransform: 'capitalize' }}>Status: {finding.status}</span>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-
-                      {/* Right: Selected Finding Inspector */}
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                            <ShieldAlert size={18} color="var(--rose-400)" />
-                            <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                              Finding Inspector & Risk Model
-                            </h4>
-                          </div>
-
-                          {selectedFinding && (
-                            <select
-                              className="input"
-                              value={selectedFinding.status}
-                              onChange={e => handleUpdateFindingStatus(selectedFinding.id, e.target.value)}
-                              style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem', width: 'auto' }}
-                            >
-                              <option value="open">Status: Open</option>
-                              <option value="acknowledged">Status: Acknowledged</option>
-                              <option value="resolved">Status: Resolved</option>
-                              <option value="suppressed">Status: Suppressed</option>
-                            </select>
-                          )}
-                        </div>
-
-                        {selectedFinding ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                            <div>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
-                                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                                  {selectedFinding.reference_code}
-                                </span>
-                                <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
-                                  {selectedFinding.finding_type}
-                                </span>
-                              </div>
-                              <h3 style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                                {selectedFinding.title}
-                              </h3>
-                            </div>
-
-                            {/* Risk Score vs CVSS Strip */}
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
-                              <div style={{ background: 'rgba(244, 63, 94, 0.1)', border: '1px solid rgba(244, 63, 94, 0.3)', borderRadius: '6px', padding: '0.65rem' }}>
-                                <div style={{ fontSize: '0.7rem', color: 'var(--rose-400)', fontWeight: 600 }}>PLATFORM CONTEXTUAL RISK</div>
-                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.15rem' }}>
-                                  {selectedFinding.context_score} / 100
-                                </div>
-                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                                  Level: {selectedFinding.risk_category}
-                                </div>
-                              </div>
-
-                              <div style={{ background: 'rgba(15, 23, 42, 0.7)', border: '1px solid var(--border-subtle)', borderRadius: '6px', padding: '0.65rem' }}>
-                                <div style={{ fontSize: '0.7rem', color: 'var(--cyan-400)', fontWeight: 600 }}>NVD CVSS BASE SCORE</div>
-                                <div style={{ fontSize: '1.3rem', fontWeight: 700, color: 'var(--cyan-400)', marginTop: '0.15rem' }}>
-                                  {selectedFinding.cvss_score !== null && selectedFinding.cvss_score !== undefined ? `${selectedFinding.cvss_score} / 10.0` : 'N/A'}
-                                </div>
-                                <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '0.1rem' }}>
-                                  Severity: {selectedFinding.severity}
-                                </div>
-                              </div>
-                            </div>
-
-                            {/* Transparent Risk Factors Table */}
-                            {selectedFinding.risk_factors && (
-                              <div style={{ background: 'rgba(0, 0, 0, 0.35)', borderRadius: '6px', padding: '0.75rem', border: '1px solid var(--border-subtle)' }}>
-                                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.4rem' }}>
-                                  Contextual Risk Scoring Breakdown:
-                                </div>
-                                <table className="table" style={{ fontSize: '0.75rem' }}>
-                                  <tbody>
-                                    <tr>
-                                      <td style={{ color: 'var(--text-muted)' }}>Base Factor:</td>
-                                      <td style={{ color: 'var(--text-primary)' }}>{selectedFinding.risk_factors.base_factor}</td>
-                                    </tr>
-                                    {selectedFinding.risk_factors.cisa_kev_adjustment > 0 && (
-                                      <tr>
-                                        <td style={{ color: 'var(--rose-400)' }}>CISA KEV Adjustment:</td>
-                                        <td style={{ color: 'var(--rose-400)' }}>+{selectedFinding.risk_factors.cisa_kev_adjustment} pts ({selectedFinding.risk_factors.cisa_kev_reason})</td>
-                                      </tr>
-                                    )}
-                                    {selectedFinding.risk_factors.exposure_adjustment > 0 && (
-                                      <tr>
-                                        <td style={{ color: '#fb923c' }}>Exposure Adjustment:</td>
-                                        <td style={{ color: '#fb923c' }}>+{selectedFinding.risk_factors.exposure_adjustment} pts ({selectedFinding.risk_factors.exposure_reason})</td>
-                                      </tr>
-                                    )}
-                                    {selectedFinding.risk_factors.confidence_adjustment !== 0 && (
-                                      <tr>
-                                        <td style={{ color: 'var(--cyan-400)' }}>Confidence Factor:</td>
-                                        <td style={{ color: 'var(--cyan-400)' }}>{selectedFinding.risk_factors.confidence_adjustment > 0 ? `+${selectedFinding.risk_factors.confidence_adjustment}` : selectedFinding.risk_factors.confidence_adjustment} pts ({selectedFinding.risk_factors.confidence_reason})</td>
-                                      </tr>
-                                    )}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-
-                            {/* Description */}
-                            <div>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Description</div>
-                              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                                {selectedFinding.description}
-                              </p>
-                            </div>
-
-                            {/* Remediation */}
-                            <div style={{ background: 'rgba(16, 185, 129, 0.1)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '6px', padding: '0.75rem' }}>
-                              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--emerald-400)', marginBottom: '0.2rem' }}>
-                                Recommended Remediation
-                              </div>
-                              <p style={{ fontSize: '0.8rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
-                                {selectedFinding.remediation || selectedFinding.recommendation}
-                              </p>
-                            </div>
-
-                            {/* Affected Component Details */}
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.75rem' }}>
-                              <div>
-                                <span style={{ color: 'var(--text-muted)' }}>Target Asset: </span>
-                                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{selectedFinding.asset?.value || 'N/A'}</span>
-                              </div>
-                              {selectedFinding.technology && (
-                                <div>
-                                  <span style={{ color: 'var(--text-muted)' }}>Technology: </span>
-                                  <span style={{ color: '#a78bfa' }}>{selectedFinding.technology.name} {selectedFinding.technology.version || ''}</span>
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                        ) : (
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2.5rem 0' }}>
-                            Select a finding from the list to view its risk factor breakdown and remediation.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      No security findings generated yet for this investigation. Click <strong>Generate Findings & Risk</strong> to run correlation.
-                    </div>
-                  )}
-                </div>
-
-                {/* 8. Attack Surface Monitoring & Change Detection Section */}
-                <div className="glass-panel" style={{ padding: '1.5rem', borderLeft: '4px solid #06b6d4' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem', marginBottom: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{ background: 'rgba(6, 182, 212, 0.15)', padding: '0.6rem', borderRadius: '10px', color: 'var(--cyan-400)' }}>
-                        <History size={22} />
-                      </div>
-                      <div>
-                        <h2 style={{ fontSize: '1.15rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                          8. Attack Surface Monitoring & Change Detection
-                        </h2>
-                        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                          Deterministic, evidence-backed point-in-time diffing across domains, DNS, IPs, services, tech, CVEs, and certificates
-                        </p>
-                      </div>
-                    </div>
-
-                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <input
-                          type="text"
-                          className="input"
-                          placeholder="Baseline Scan ID (optional)"
-                          value={selectedBaselineScan}
-                          onChange={e => setSelectedBaselineScan(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: '160px', fontFamily: 'var(--font-mono)' }}
-                        />
-                        <input
-                          type="text"
-                          className="input"
-                          placeholder="Current Scan ID (optional)"
-                          value={selectedCurrentScan}
-                          onChange={e => setSelectedCurrentScan(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: '160px', fontFamily: 'var(--font-mono)' }}
-                        />
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Filter size={14} color="var(--text-muted)" />
-                        <select
-                          className="input"
-                          value={filterChangeType}
-                          onChange={e => setFilterChangeType(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Change Types</option>
-                          <option value="ADDED">Added (+)</option>
-                          <option value="REMOVED">Removed (-)</option>
-                          <option value="MODIFIED">Modified (~)</option>
-                        </select>
-                      </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <select
-                          className="input"
-                          value={filterChangeCategory}
-                          onChange={e => setFilterChangeCategory(e.target.value)}
-                          style={{ padding: '0.35rem 0.6rem', fontSize: '0.8rem', width: 'auto' }}
-                        >
-                          <option value="ALL">All Categories</option>
-                          <option value="subdomain">Subdomain</option>
-                          <option value="dns_record">DNS Record</option>
-                          <option value="ip_observation">IP Observation</option>
-                          <option value="service_exposure">Service Exposure</option>
-                          <option value="technology">Technology</option>
-                          <option value="vulnerability">Vulnerability</option>
-                          <option value="certificate">Certificate</option>
-                          <option value="asset_relationship">Relationship</option>
-                          <option value="finding">Finding</option>
-                        </select>
-                      </div>
-
-                      <button
-                        className="btn btn-primary"
-                        onClick={handleCompareScans}
-                        disabled={runningCompare || !selectedInv}
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'linear-gradient(135deg, #0284c7, #06b6d4)' }}
-                      >
-                        <GitCompare size={16} className={runningCompare ? 'animate-spin' : ''} />
-                        {runningCompare ? 'Diffing Scans...' : 'Compare Scan Runs'}
-                      </button>
-                    </div>
-                  </div>
-
-                  {changeError && (
-                    <div className="alert alert-danger" style={{ marginBottom: '1.25rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <XCircle size={16} />
-                      <span>{changeError}</span>
-                    </div>
-                  )}
-
-                  {/* Summary Metric Strip */}
-                  {comparisonResult && (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '0.75rem', marginBottom: '1.25rem' }}>
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Total Changes</div>
-                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '0.2rem' }}>
-                          {comparisonResult.total_changes}
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(16, 185, 129, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)' }}>Added (+)</div>
-                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--emerald-400)', marginTop: '0.2rem' }}>
-                          +{comparisonResult.added_count}
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(244, 63, 94, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)' }}>Removed (-)</div>
-                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--rose-400)', marginTop: '0.2rem' }}>
-                          -{comparisonResult.removed_count}
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid rgba(250, 204, 21, 0.3)', borderRadius: '8px', padding: '0.85rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: '#facc15' }}>Modified (~)</div>
-                        <div style={{ fontSize: '1.35rem', fontWeight: 700, color: '#facc15', marginTop: '0.2rem' }}>
-                          ~{comparisonResult.modified_count}
-                        </div>
-                      </div>
-
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem' }}>
-                        <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Scan Attribution</div>
-                        <div style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--cyan-400)', marginTop: '0.35rem', fontFamily: 'var(--font-mono)' }}>
-                          Run #{comparisonResult.baseline_scan_run_number || 1} → #{comparisonResult.current_scan_run_number || 2}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Changes Split Explorer & Inspector */}
-                  {changesList.length > 0 ? (
-                    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1rem', alignItems: 'start' }}>
-                      {/* Left: Changes List */}
-                      <div style={{ background: 'rgba(15, 23, 42, 0.4)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1rem' }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-                          <h4 style={{ fontSize: '0.9rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                            Detected Changes ({changesList.filter(c => {
-                              if (filterChangeType !== 'ALL' && c.change_type !== filterChangeType) return false;
-                              if (filterChangeCategory !== 'ALL' && (c.category !== filterChangeCategory && c.field_name !== filterChangeCategory)) return false;
-                              return true;
-                            }).length})
-                          </h4>
-                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Click change to inspect diff</span>
-                        </div>
-
-                        <div style={{ maxHeight: '420px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                          {changesList
-                            .filter(c => {
-                              if (filterChangeType !== 'ALL' && c.change_type !== filterChangeType) return false;
-                              if (filterChangeCategory !== 'ALL' && (c.category !== filterChangeCategory && c.field_name !== filterChangeCategory)) return false;
-                              return true;
-                            })
-                            .map(change => {
-                              const isSelected = selectedChangeRecord?.id === change.id;
-                              const typeBadge =
-                                change.change_type === 'ADDED' ? { bg: 'rgba(16, 185, 129, 0.2)', border: 'rgba(16, 185, 129, 0.4)', color: 'var(--emerald-400)', label: '+ ADDED' } :
-                                change.change_type === 'REMOVED' ? { bg: 'rgba(244, 63, 94, 0.2)', border: 'rgba(244, 63, 94, 0.4)', color: 'var(--rose-400)', label: '- REMOVED' } :
-                                { bg: 'rgba(250, 204, 21, 0.2)', border: 'rgba(250, 204, 21, 0.4)', color: '#facc15', label: '~ MODIFIED' };
-
-                              return (
-                                <div
-                                  key={change.id}
-                                  onClick={() => setSelectedChangeRecord(change)}
-                                  style={{
-                                    padding: '0.75rem',
-                                    borderRadius: '8px',
-                                    background: isSelected ? 'rgba(6, 182, 212, 0.12)' : 'rgba(30, 41, 59, 0.45)',
-                                    border: isSelected ? '1px solid var(--cyan-400)' : '1px solid var(--border-subtle)',
-                                    cursor: 'pointer',
-                                    transition: 'all 0.15s ease',
-                                    display: 'flex',
-                                    flexDirection: 'column',
-                                    gap: '0.4rem',
-                                  }}
-                                >
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                      <span
-                                        className="badge"
-                                        style={{
-                                          fontSize: '0.65rem',
-                                          background: typeBadge.bg,
-                                          border: `1px solid ${typeBadge.border}`,
-                                          color: typeBadge.color,
-                                          fontWeight: 700,
-                                        }}
-                                      >
-                                        {typeBadge.label}
-                                      </span>
-                                      <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>
-                                        {change.category}
-                                      </span>
-                                    </div>
-                                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                                      {new Date(change.detected_at).toLocaleTimeString()}
-                                    </span>
-                                  </div>
-
-                                  <div style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                    {change.description || change.entity_key}
-                                  </div>
-
-                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
-                                    {change.entity_key}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                        </div>
-                      </div>
-
-                      {/* Right: Selected Change Inspector */}
-                      <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
-                          <History size={18} color="var(--cyan-400)" />
-                          <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
-                            Change Record Inspector
-                          </h4>
-                        </div>
-
-                        {selectedChangeRecord ? (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-                            <div>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Entity Key</div>
-                              <div style={{ fontSize: '0.85rem', fontFamily: 'var(--font-mono)', color: 'var(--cyan-400)', wordBreak: 'break-all' }}>
-                                {selectedChangeRecord.entity_key}
-                              </div>
-                            </div>
-
-                            <div>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.2rem' }}>Description</div>
-                              <p style={{ fontSize: '0.85rem', color: 'var(--text-primary)', lineHeight: 1.4 }}>
-                                {selectedChangeRecord.description}
-                              </p>
-                            </div>
-
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.6rem' }}>
-                              <div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--rose-400)', fontWeight: 600, marginBottom: '0.3rem' }}>
-                                  Baseline State (Old)
-                                </div>
-                                <pre
-                                  style={{
-                                    background: 'rgba(0, 0, 0, 0.45)',
-                                    border: '1px solid rgba(244, 63, 94, 0.25)',
-                                    padding: '0.65rem',
-                                    borderRadius: '6px',
-                                    fontSize: '0.75rem',
-                                    fontFamily: 'var(--font-mono)',
-                                    color: 'var(--text-secondary)',
-                                    maxHeight: '200px',
-                                    overflowY: 'auto',
-                                    whiteSpace: 'pre-wrap',
-                                    wordBreak: 'break-all',
-                                  }}
-                                >
-                                  {selectedChangeRecord.old_value ? JSON.stringify(selectedChangeRecord.old_value, null, 2) : 'null (Newly Added)'}
-                                </pre>
-                              </div>
-
-                              <div>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--emerald-400)', fontWeight: 600, marginBottom: '0.3rem' }}>
-                                  Current State (New)
-                                </div>
-                                <pre
-                                  style={{
-                                    background: 'rgba(0, 0, 0, 0.45)',
-                                    border: '1px solid rgba(16, 185, 129, 0.25)',
-                                    padding: '0.65rem',
-                                    borderRadius: '6px',
-                                    fontSize: '0.75rem',
-                                    fontFamily: 'var(--font-mono)',
-                                    color: 'var(--text-secondary)',
-                                    maxHeight: '200px',
-                                    overflowY: 'auto',
-                                    whiteSpace: 'pre-wrap',
-                                    wordBreak: 'break-all',
-                                  }}
-                                >
-                                  {selectedChangeRecord.new_value ? JSON.stringify(selectedChangeRecord.new_value, null, 2) : 'null (No longer observed in current scan)'}
-                                </pre>
-                              </div>
-                            </div>
-
-                            {selectedChangeRecord.evidence_hash && (
-                              <div style={{ background: 'rgba(0, 0, 0, 0.3)', padding: '0.5rem 0.75rem', borderRadius: '6px', border: '1px solid var(--border-subtle)', fontSize: '0.75rem' }}>
-                                <span style={{ color: 'var(--text-muted)' }}>Evidence Hash (SHA-256): </span>
-                                <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)' }}>
-                                  {selectedChangeRecord.evidence_hash}
-                                </span>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '2.5rem 0' }}>
-                            Select a change record from the list to inspect state diffs.
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ textAlign: 'center', padding: '2rem 0', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      No scan differences computed yet. Click <strong>Compare Scan Runs</strong> to detect attack surface changes.
-                    </div>
-                  )}
-                </div>
-
-                {/* Discovered Certificates Section (if CT discovery ran) */}
-                {ctResult && ctResult.certificates.length > 0 && (
-                  <div className="glass-panel" style={{ padding: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                      <FileText size={18} color="var(--cyan-400)" />
-                      <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>
-                        Observed TLS Certificates ({ctResult.certificates.length})
-                      </h3>
-                    </div>
-
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {ctResult.certificates.map(cert => (
-                        <div
-                          key={cert.fingerprint_sha256}
-                          style={{
-                            background: 'rgba(15, 23, 42, 0.5)',
-                            border: '1px solid var(--border-subtle)',
-                            borderRadius: '8px',
-                            padding: '1rem',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
-                            <div>
-                              <span style={{ fontWeight: 600, color: 'var(--cyan-400)' }}>CN: {cert.subject_cn}</span>
-                              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Issuer: {cert.issuer}</div>
-                            </div>
-                            <span className={`badge ${cert.is_expired ? 'badge-danger' : 'badge-success'}`} style={{ fontSize: '0.7rem' }}>
-                              {cert.is_expired ? 'Expired' : 'Valid'}
-                            </span>
-                          </div>
-
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.5rem' }}>
-                            Valid: {new Date(cert.valid_from).toLocaleDateString()} — {new Date(cert.valid_to).toLocaleDateString()}
-                          </div>
-
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-                            {cert.san_list.map(san => (
-                              <span
-                                key={san}
-                                className="badge badge-neutral font-mono"
-                                style={{ fontSize: '0.7rem', padding: '0.15rem 0.45rem' }}
-                              >
-                                {san}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-              </>
-            ) : (
-              <div className="glass-panel" style={{ padding: '3rem', textAlign: 'center', color: 'var(--text-muted)' }}>
-                Select an investigation from the left panel or create a new assessment to begin OSINT discovery.
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+        </form>
+      </Modal>
     </div>
   );
 };
 
 export default App;
-

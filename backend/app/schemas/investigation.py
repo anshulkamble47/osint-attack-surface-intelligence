@@ -83,6 +83,22 @@ class InvestigationResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ScanRunResponse(BaseModel):
+    """Safe ScanRun execution summary schema."""
+    id: uuid.UUID
+    investigation_id: uuid.UUID
+    run_number: int
+    status: str
+    total_discovered_assets: int
+    total_resolving_assets: int
+    total_findings: int
+    summary: Dict[str, Any]
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class CertificateSummaryResponse(BaseModel):
     """Discovered TLS certificate observation summary."""
     fingerprint_sha256: str = Field(

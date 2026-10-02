@@ -2,6 +2,7 @@
 
 import sys
 from logging.config import fileConfig
+import sqlalchemy as sa
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 
@@ -49,6 +50,13 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
+        # Ensure alembic_version table can store revision strings > 32 characters
+        try:
+            connection.execute(sa.text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(128);"))
+            connection.commit()
+        except Exception:
+            pass
+
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

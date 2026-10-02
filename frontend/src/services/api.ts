@@ -3,6 +3,7 @@ import {
   TokenResponse,
   UserResponse,
   InvestigationResponse,
+  ScanRunResponse,
   CTDiscoveryResponse,
   AssetSummary,
   DNSReachabilityResponse,
@@ -106,6 +107,15 @@ export async function createInvestigation(
 
 export async function listInvestigations(token: string): Promise<InvestigationResponse[]> {
   return request<InvestigationResponse[]>('/investigations', {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function listInvestigationScans(
+  token: string,
+  investigationId: string
+): Promise<ScanRunResponse[]> {
+  return request<ScanRunResponse[]>(`/investigations/${investigationId}/scans`, {
     headers: { Authorization: `Bearer ${token}` },
   });
 }

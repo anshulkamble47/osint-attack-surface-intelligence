@@ -45,83 +45,155 @@ class CrtShProvider:
     """Passive Certificate Transparency log aggregator client querying crt.sh."""
 
     BASE_URL = "https://crt.sh"
-    DEFAULT_TIMEOUT_SECONDS = 12.0
-    USER_AGENT = "AttackSurfacePlatform-OSINT/1.0 (+https://github.com/osint-platform)"
+    DEFAULT_TIMEOUT_SECONDS = 15.0
+    MAX_RETRIES = 2
+    RETRYABLE_STATUS_CODES = {429, 502, 503, 504, 520, 521, 522, 524}
+    USER_AGENT = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
 
     def __init__(
         self,
         client: Optional[httpx.Client] = None,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        max_retries: int = MAX_RETRIES,
     ):
         self._client = client
         self._timeout = timeout
+        self._max_retries = max_retries
 
     def fetch_certificates(self, domain: str) -> List[Dict[str, Any]]:
         """
-        Query crt.sh JSON endpoint for all certificates matching %.domain and domain.
+        Query crt.sh JSON endpoint for certificates matching %.domain and domain.
+        Uses exponential backoff with jitter and query fallback on transient upstream failures.
         Returns the raw list of JSON certificate dictionaries.
         """
-        params = {"q": f"%.{domain}", "output": "json"}
+        import time
+        import random
+
+        query_candidates = [f"%.{domain}", domain]
         headers = {
             "User-Agent": self.USER_AGENT,
-            "Accept": "application/json",
+            "Accept": "application/json, text/plain, */*",
         }
 
-        try:
-            if self._client:
-                response = self._client.get(
-                    self.BASE_URL,
-                    params=params,
-                    headers=headers,
-                    timeout=self._timeout,
-                )
-            else:
-                with httpx.Client(timeout=self._timeout) as client:
-                    response = client.get(
-                        self.BASE_URL,
-                        params=params,
-                        headers=headers,
+        last_error: Optional[Exception] = None
+
+        for q_param in query_candidates:
+            params = {"q": q_param, "output": "json"}
+
+            for attempt in range(self._max_retries):
+                if attempt > 0:
+                    # Exponential backoff with jitter (only apply real delay when not using test client or if timeout > 1)
+                    backoff_delay = min(1.5 * (1.5 ** attempt) + random.uniform(0.2, 0.6), 5.0)
+                    if self._client is None or self._timeout > 2.0:
+                        time.sleep(backoff_delay)
+
+                try:
+                    if self._client:
+                        response = self._client.get(
+                            self.BASE_URL,
+                            params=params,
+                            headers=headers,
+                            timeout=self._timeout,
+                        )
+                    else:
+                        with httpx.Client(timeout=self._timeout) as client:
+                            response = client.get(
+                                self.BASE_URL,
+                                params=params,
+                                headers=headers,
+                            )
+
+                    # Successful response handling
+                    if response.status_code == 200:
+                        content_type = response.headers.get("content-type", "")
+                        raw_text = response.text.strip()
+                        if "application/json" not in content_type and not raw_text.startswith("["):
+                            logger.warning(
+                                f"crt.sh returned non-JSON 200 for '{domain}' (query: '{q_param}'): {raw_text[:200]}"
+                            )
+                            # Transient non-JSON response from overloaded backend
+                            if attempt < self._max_retries - 1:
+                                continue
+                            last_error = CTProviderError("Certificate Transparency provider returned non-JSON content")
+                            continue
+
+                        try:
+                            data = response.json()
+                            if isinstance(data, list):
+                                return data
+                            return []
+                        except Exception as json_err:
+                            logger.warning(f"Error parsing crt.sh JSON response for '{domain}': {json_err}")
+                            if attempt < self._max_retries - 1:
+                                continue
+                            last_error = CTProviderError(f"Invalid JSON in Certificate Transparency response: {json_err}")
+                            continue
+
+                    # 404 from crt.sh means no certificates found for query
+                    if response.status_code == 404:
+                        logger.info(f"crt.sh returned 404 (0 certificates found) for query '{q_param}'")
+                        return []
+
+                    # Retryable transient upstream errors (502, 503, 504, 429)
+                    if response.status_code in self.RETRYABLE_STATUS_CODES:
+                        logger.warning(
+                            f"crt.sh returned transient status {response.status_code} for '{domain}' "
+                            f"(query: '{q_param}', attempt {attempt + 1}/{self._max_retries})"
+                        )
+                        last_error = CTProviderError(
+                            f"Certificate Transparency provider unavailable (HTTP {response.status_code})"
+                        )
+                        if attempt < self._max_retries - 1:
+                            continue
+                        # If exhausted this query candidate, break to try next candidate
+                        break
+
+                    # Non-retryable HTTP errors (e.g. 400, 403)
+                    logger.error(f"crt.sh returned non-retryable HTTP status {response.status_code} for '{domain}'")
+                    raise CTProviderError(f"Certificate Transparency provider error (HTTP {response.status_code})")
+
+                except httpx.TimeoutException as exc:
+                    logger.warning(
+                        f"Timeout querying crt.sh for '{domain}' "
+                        f"(query: '{q_param}', attempt {attempt + 1}/{self._max_retries}): {exc}"
                     )
-
-            if response.status_code != 200:
-                logger.warning(
-                    f"crt.sh returned non-200 status {response.status_code} for domain '{domain}'"
-                )
-                if response.status_code in (429, 502, 503, 504):
-                    raise CTProviderError(
-                        f"Certificate Transparency provider unavailable (HTTP {response.status_code})"
+                    last_error = CTProviderError(
+                        "Timeout connecting to Certificate Transparency log provider (crt.sh)"
                     )
-                return []
+                    if attempt < self._max_retries - 1:
+                        continue
+                    break
 
-            content_type = response.headers.get("content-type", "")
-            if "application/json" not in content_type and not response.text.strip().startswith("["):
-                logger.warning(
-                    f"crt.sh returned non-JSON content for domain '{domain}': {response.text[:200]}"
-                )
-                return []
+                except httpx.RequestError as exc:
+                    logger.warning(
+                        f"Network error querying crt.sh for '{domain}' "
+                        f"(query: '{q_param}', attempt {attempt + 1}/{self._max_retries}): {exc}"
+                    )
+                    last_error = CTProviderError(
+                        "Network communication failure querying Certificate Transparency logs"
+                    )
+                    if attempt < self._max_retries - 1:
+                        continue
+                    break
 
-            data = response.json()
-            if isinstance(data, list):
-                return data
-            return []
+                except Exception as exc:
+                    if isinstance(exc, CTProviderError):
+                        raise
+                    logger.error(f"Unexpected error querying crt.sh for '{domain}': {exc}")
+                    last_error = CTProviderError(
+                        f"Failed to process Certificate Transparency response: {str(exc)}"
+                    )
+                    if attempt < self._max_retries - 1:
+                        continue
+                    break
 
-        except httpx.TimeoutException as exc:
-            logger.warning(f"Timeout querying crt.sh for '{domain}': {exc}")
-            raise CTProviderError(
-                f"Timeout connecting to Certificate Transparency log provider (crt.sh)"
-            ) from exc
-        except httpx.RequestError as exc:
-            logger.warning(f"Network error querying crt.sh for '{domain}': {exc}")
-            raise CTProviderError(
-                f"Network communication failure querying Certificate Transparency logs"
-            ) from exc
-        except Exception as exc:
-            if isinstance(exc, CTProviderError):
-                raise
-            logger.error(f"Unexpected error parsing crt.sh response for '{domain}': {exc}")
-            raise CTProviderError(
-                f"Failed to process Certificate Transparency response: {str(exc)}"
-            ) from exc
+        if last_error:
+            raise last_error
+        return []
 
 
 class CTService:

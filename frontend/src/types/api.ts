@@ -46,6 +46,19 @@ export interface InvestigationResponse {
   created_at: string;
 }
 
+export interface ScanRunResponse {
+  id: string;
+  investigation_id: string;
+  run_number: number;
+  status: string;
+  total_discovered_assets: number;
+  total_resolving_assets: number;
+  total_findings: number;
+  summary: Record<string, any>;
+  started_at: string;
+  completed_at?: string | null;
+}
+
 export interface CertificateSummary {
   fingerprint_sha256: string;
   subject_cn: string;

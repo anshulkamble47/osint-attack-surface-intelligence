@@ -383,3 +383,96 @@ def test_list_investigation_assets():
     assert len(assets) == 1
     assert assets[0]["value"] == "assets.test.com"
     assert assets[0]["asset_type"] == "domain"
+
+
+# --- 4. CrtShProvider Resilient Retry & Failure Tests ---
+
+def test_crtsh_provider_retry_on_502_success():
+    """Verify CrtShProvider recovers when first attempt returns 502 and second attempt returns 200."""
+    mock_client = MagicMock()
+    res_502 = MagicMock()
+    res_502.status_code = 502
+    res_502.headers = {"content-type": "text/html"}
+    res_502.text = "<html>502 Bad Gateway</html>"
+
+    res_200 = MagicMock()
+    res_200.status_code = 200
+    res_200.headers = {"content-type": "application/json"}
+    res_200.text = '[{"id": 1, "common_name": "example.com", "name_value": "example.com"}]'
+    res_200.json.return_value = [{"id": 1, "common_name": "example.com", "name_value": "example.com"}]
+
+    mock_client.get.side_effect = [res_502, res_200]
+
+    provider = CrtShProvider(client=mock_client, timeout=0.1, max_retries=3)
+    certs = provider.fetch_certificates("example.com")
+
+    assert len(certs) == 1
+    assert certs[0]["common_name"] == "example.com"
+    assert mock_client.get.call_count == 2
+
+
+def test_crtsh_provider_retry_on_timeout_success():
+    """Verify CrtShProvider recovers when first attempt times out and second attempt returns 200."""
+    import httpx
+    mock_client = MagicMock()
+
+    res_200 = MagicMock()
+    res_200.status_code = 200
+    res_200.headers = {"content-type": "application/json"}
+    res_200.text = '[{"id": 2, "common_name": "test.com", "name_value": "test.com"}]'
+    res_200.json.return_value = [{"id": 2, "common_name": "test.com", "name_value": "test.com"}]
+
+    mock_client.get.side_effect = [httpx.TimeoutException("Read timed out"), res_200]
+
+    provider = CrtShProvider(client=mock_client, timeout=0.1, max_retries=3)
+    certs = provider.fetch_certificates("test.com")
+
+    assert len(certs) == 1
+    assert certs[0]["id"] == 2
+    assert mock_client.get.call_count == 2
+
+
+def test_crtsh_provider_404_returns_empty_list():
+    """Verify CrtShProvider returns empty list when crt.sh returns 404 Not Found."""
+    mock_client = MagicMock()
+    res_404 = MagicMock()
+    res_404.status_code = 404
+    res_404.headers = {"content-type": "text/html"}
+    res_404.text = "Not found"
+    mock_client.get.return_value = res_404
+
+    provider = CrtShProvider(client=mock_client, timeout=0.1, max_retries=2)
+    certs = provider.fetch_certificates("nonexistent-domain-xyz.com")
+    assert certs == []
+
+
+def test_crtsh_provider_exhausted_retries_raises_ct_provider_error():
+    """Verify CrtShProvider raises CTProviderError when all retries and fallback queries fail with 502."""
+    mock_client = MagicMock()
+    res_502 = MagicMock()
+    res_502.status_code = 502
+    res_502.headers = {"content-type": "text/html"}
+    res_502.text = "<html>502 Bad Gateway</html>"
+    mock_client.get.return_value = res_502
+
+    provider = CrtShProvider(client=mock_client, timeout=0.1, max_retries=2)
+    with pytest.raises(CTProviderError) as exc_info:
+        provider.fetch_certificates("always-failing.com")
+
+    assert "Certificate Transparency provider unavailable (HTTP 502)" in str(exc_info.value)
+
+
+def test_crtsh_provider_unrecoverable_403_raises_ct_provider_error():
+    """Verify CrtShProvider immediately raises CTProviderError on HTTP 403 Forbidden."""
+    mock_client = MagicMock()
+    res_403 = MagicMock()
+    res_403.status_code = 403
+    res_403.headers = {"content-type": "text/html"}
+    res_403.text = "Forbidden"
+    mock_client.get.return_value = res_403
+
+    provider = CrtShProvider(client=mock_client, timeout=0.1, max_retries=2)
+    with pytest.raises(CTProviderError) as exc_info:
+        provider.fetch_certificates("blocked.com")
+
+    assert "HTTP 403" in str(exc_info.value)
