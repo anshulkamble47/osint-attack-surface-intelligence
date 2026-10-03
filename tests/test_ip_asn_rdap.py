@@ -1145,3 +1145,195 @@ def test_enrich_investigation_forbidden_for_other_analyst():
 
     res = client.post(f"/api/investigations/{inv_id}/enrich/ip", headers=analyst_two_headers)
     assert res.status_code == 403
+
+
+# =====================================================================
+# 8. CONCURRENCY, TIMEOUT RESILIENCE, CACHING & WARNING SEMANTICS TESTS
+# =====================================================================
+
+def test_rdap_service_host_validation_caching():
+    """Verify that RDAP hostname SSRF DNS validation is cached to eliminate redundant DNS queries."""
+    mock_resolver = make_mock_resolver({
+        "rdap.arin.net": ["192.0.47.8"],
+    })
+    service = RDAPService(resolver=mock_resolver)
+
+    # First validation should hit mock_resolver
+    assert service._validate_rdap_endpoint("https://rdap.arin.net/registry/ip/8.8.8.8") is True
+    initial_resolve_count = mock_resolver.resolve.call_count
+    assert initial_resolve_count > 0
+
+    # Subsequent validations for the same host should hit cache without querying DNS
+    for _ in range(10):
+        assert service._validate_rdap_endpoint("https://rdap.arin.net/registry/ip/8.8.4.4") is True
+
+    assert mock_resolver.resolve.call_count == initial_resolve_count
+
+
+def test_asn_service_as_name_caching():
+    """Verify that AS name resolution is cached across multiple IPs in the same ASN."""
+    mock_resolver = MagicMock()
+
+    mock_rdata_origin = MagicMock()
+    mock_rdata_origin.strings = [b"16509 | 54.0.0.0/8 | US | arin | 2000-01-01"]
+
+    mock_rdata_asname = MagicMock()
+    mock_rdata_asname.strings = [b"16509 | US | arin | 2000-01-01 | AMAZON-02, US"]
+
+    as_query_count = 0
+    def resolve_side_effect(qname, rtype):
+        nonlocal as_query_count
+        if "origin.asn.cymru.com" in qname:
+            mock_ans = MagicMock()
+            mock_ans.__iter__.return_value = [mock_rdata_origin]
+            return mock_ans
+        elif "asn.cymru.com" in qname:
+            as_query_count += 1
+            mock_ans = MagicMock()
+            mock_ans.__iter__.return_value = [mock_rdata_asname]
+            return mock_ans
+        raise dns.resolver.NXDOMAIN()
+
+    mock_resolver.resolve.side_effect = resolve_side_effect
+
+    provider = CymruDNSASNProvider()
+    with patch.object(provider, "_get_resolver", return_value=mock_resolver):
+        # Lookup 5 different IPs that belong to the same ASN 16509
+        ips = ["54.86.93.117", "54.86.93.118", "54.86.93.119", "54.86.93.120", "54.86.93.121"]
+        for ip in ips:
+            info = provider.lookup(ip)
+            assert info is not None
+            assert info.asn_number == 16509
+            assert info.name == "AMAZON-02, US"
+
+        # AS Name query should be cached and only called once!
+        assert as_query_count == 1
+
+
+def test_rdap_service_timeout_handling_returns_none_gracefully():
+    """Verify that httpx.TimeoutException, ReadTimeout, and ConnectTimeout return None without crashing."""
+    mock_client = MagicMock()
+    mock_client.get.side_effect = httpx.ReadTimeout("Read timed out after 3.0 seconds")
+
+    mock_resolver = make_mock_resolver({
+        "rdap.arin.net": ["192.0.47.8"],
+    })
+
+    service = RDAPService(client=mock_client, resolver=mock_resolver)
+    result = service.lookup("8.8.8.8")
+    assert result is None
+
+
+def test_concurrent_ip_enrichment_with_warning_semantics():
+    """
+    Verify bounded concurrent enrichment across multiple IPv4 & IPv6 addresses with mixed outcomes:
+    - Succeeded lookups are saved and marked as 'enriched'
+    - Failed/timed out lookups are isolated and marked as 'failed'
+    - ScanRun receives status 'completed_with_warnings' with warnings_count > 0
+    - Historical IPObservations are created for all valid IPs
+    """
+    analyst_headers = get_auth_headers("analyst_one")
+
+    with TestingSessionLocal() as db:
+        user = db.query(User).filter(User.username == "analyst_one").first()
+
+        target = Target(name="Concurrent Corp", primary_domain="concurrent.example.com", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        investigation = Investigation(
+            reference_code=f"INV-TEST-{uuid.uuid4().hex[:6].upper()}",
+            target_id=target.id,
+            title="Concurrent IP Enrichment Assessment",
+            status="active",
+            created_by_id=user.id,
+        )
+        db.add(investigation)
+        db.flush()
+
+        asset = Asset(target_id=target.id, investigation_id=investigation.id, asset_type="subdomain", value="multi.concurrent.example.com", source="test")
+        db.add(asset)
+        db.flush()
+
+        domain = Domain(asset_id=asset.id, domain_name="concurrent.example.com")
+        db.add(domain)
+        db.flush()
+
+        sub = Subdomain(asset_id=asset.id, domain_id=domain.id, subdomain_name="multi.concurrent.example.com", is_resolving=True)
+        db.add(sub)
+        db.flush()
+
+        # Seed 5 distinct public IPs (4 IPv4, 1 IPv6) + 1 private IP
+        dns_records = [
+            DNSRecord(subdomain_id=sub.id, record_type="A", value="8.8.8.8"),
+            DNSRecord(subdomain_id=sub.id, record_type="A", value="1.1.1.1"),
+            DNSRecord(subdomain_id=sub.id, record_type="A", value="15.179.189.1"),
+            DNSRecord(subdomain_id=sub.id, record_type="A", value="151.101.1.69"),  # Deliberate failure target (public IP)
+            DNSRecord(subdomain_id=sub.id, record_type="AAAA", value="2606:4700::6810:7b60"),
+            DNSRecord(subdomain_id=sub.id, record_type="A", value="10.0.0.1"),      # Private IP
+        ]
+        db.add_all(dns_records)
+        db.commit()
+
+        inv_id = str(investigation.id)
+
+    # Mock ASN Service: 8.8.8.8, 1.1.1.1, 15.179.189.1, 2606:4700::6810:7b60 succeed; 151.101.1.69 fails
+    mock_asn = MagicMock(spec=ASNService)
+    def mock_asn_call(ip):
+        if ip == "8.8.8.8":
+            return ASNInfo(asn_number=99101, name="TEST-GOOGLE", country="US", allocated_prefix="8.8.8.0/24")
+        elif ip == "1.1.1.1":
+            return ASNInfo(asn_number=99102, name="TEST-CLOUDFLARE", country="US", allocated_prefix="1.1.1.0/24")
+        elif ip == "15.179.189.1":
+            return ASNInfo(asn_number=99103, name="TEST-AMAZON", country="US", allocated_prefix="15.179.0.0/16")
+        elif ip == "2606:4700::6810:7b60":
+            return ASNInfo(asn_number=99102, name="TEST-CLOUDFLARE", country="US", allocated_prefix="2606:4700::/32")
+        return None
+    mock_asn.lookup.side_effect = mock_asn_call
+
+    # Mock RDAP Service: 8.8.8.8 and 1.1.1.1 succeed; 15.179.189.1 times out; 151.101.1.69 fails
+    mock_rdap = MagicMock(spec=RDAPService)
+    def mock_rdap_call(ip):
+        if ip == "8.8.8.8":
+            return RDAPInfo(ip="8.8.8.8", network_name="GOGL", organization="Google LLC", country="US", raw_json_str='{"name": "GOGL"}')
+        elif ip == "1.1.1.1":
+            return RDAPInfo(ip="1.1.1.1", network_name="APNIC-LABS", organization="Cloudflare, Inc.", country="AU", raw_json_str='{"name": "APNIC-LABS"}')
+        elif ip == "2606:4700::6810:7b60":
+            return RDAPInfo(ip="2606:4700::6810:7b60", network_name="CLOUDFLARENET", organization="Cloudflare, Inc.", country="US", raw_json_str='{"name": "CLOUDFLARENET"}')
+        # 15.179.189.1 and 151.101.1.69 return None (simulating timeout / failure)
+        return None
+    mock_rdap.lookup.side_effect = mock_rdap_call
+
+    app.dependency_overrides[get_asn_service] = lambda: mock_asn
+    app.dependency_overrides[get_rdap_service] = lambda: mock_rdap
+
+    try:
+        res = client.post(f"/api/investigations/{inv_id}/enrich/ip", headers=analyst_headers)
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["ips_processed"] == 6
+        assert data["public_ips"] == 5
+        assert data["skipped_non_public"] == 1
+        assert data["asn_success"] == 4
+        assert data["rdap_success"] == 3
+        assert data["failed"] == 1  # 151.101.1.69 failed both ASN & RDAP
+        assert data["warnings_count"] == 1
+        assert data["status"] == "completed_with_warnings"
+
+        with TestingSessionLocal() as db:
+            scan_run = db.get(ScanRun, uuid.UUID(data["scan_run_id"]))
+            assert scan_run is not None
+            assert scan_run.status == "completed_with_warnings"
+            assert scan_run.summary["status"] == "completed_with_warnings"
+            assert scan_run.summary["failed"] == 1
+            assert scan_run.summary["warnings_count"] == 1
+
+            # Verify persisted IP observations (5 public IPs)
+            obs = db.query(IPObservation).filter(IPObservation.scan_run_id == scan_run.id).all()
+            assert len(obs) == 5
+
+    finally:
+        app.dependency_overrides.pop(get_asn_service, None)
+        app.dependency_overrides.pop(get_rdap_service, None)
+

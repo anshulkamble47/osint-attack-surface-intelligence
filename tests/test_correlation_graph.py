@@ -27,6 +27,7 @@ import uuid
 import random
 from datetime import datetime, timezone
 import pytest
+from sqlalchemy import select
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
@@ -875,3 +876,314 @@ def test_20_stage6_regression_vulnerability_relationships_intact(populated_graph
     assert item["technology_name"] == "nginx"
     assert item["cve_id"] == env["cve_id"]
     assert item["severity"] == "HIGH"
+
+
+def test_21_asn_filtering_incident_relationships(populated_graph_environment):
+    """Verify that filtering by node_type=asn retains incident ANNOUNCED_BY relationships and does not return 0 edges."""
+    env = populated_graph_environment
+    headers = get_auth_headers(env["analyst_id"], "analyst_7a", "analyst")
+
+    response = client.get(
+        f"/api/investigations/{env['investigation_id']}/graph?node_type=asn",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    data = response.json()
+
+    # Verify ASN node is present
+    asn_nodes = [n for n in data["nodes"] if n["type"] == "asn"]
+    assert len(asn_nodes) == 1
+    assert asn_nodes[0]["metadata"]["asn_number"] == env["asn_number"]
+
+    # Verify incident ANNOUNCED_BY edge is preserved
+    announced_edges = [e for e in data["edges"] if e["relationship_type"] == "ANNOUNCED_BY"]
+    assert len(announced_edges) >= 1
+    assert announced_edges[0]["target"] == asn_nodes[0]["id"]
+    assert data["statistics"]["edge_count"] >= 1
+
+
+def test_22_subdomain_and_ip_node_filtering(populated_graph_environment):
+    """Verify that single node-type filtering for subdomains or IPs returns incident edges."""
+    env = populated_graph_environment
+    headers = get_auth_headers(env["analyst_id"], "analyst_7a", "analyst")
+
+    # Filter by subdomain
+    res_sub = client.get(
+        f"/api/investigations/{env['investigation_id']}/graph?node_type=subdomain",
+        headers=headers,
+    )
+    assert res_sub.status_code == 200
+    data_sub = res_sub.json()
+    assert all(n["type"] == "subdomain" for n in data_sub["nodes"])
+    # Incident edges should include CONTAINS, RESOLVES_TO, EXPOSES, HAS_CERTIFICATE
+    assert len(data_sub["edges"]) > 0
+
+    # Filter by ip
+    res_ip = client.get(
+        f"/api/investigations/{env['investigation_id']}/graph?node_type=ip",
+        headers=headers,
+    )
+    assert res_ip.status_code == 200
+    data_ip = res_ip.json()
+    assert all(n["type"] == "ip" for n in data_ip["nodes"])
+    # Incident edges should include RESOLVES_TO and ANNOUNCED_BY
+    assert len(data_ip["edges"]) >= 1
+
+
+def test_23_relationship_filtering_and_idempotent_reconstruction(populated_graph_environment):
+    """Verify relationship-type filtering and idempotent graph construction."""
+    env = populated_graph_environment
+    headers = get_auth_headers(env["analyst_id"], "analyst_7a", "analyst")
+
+    # Filter by relationship_type=RESOLVES_TO
+    res_rel = client.get(
+        f"/api/investigations/{env['investigation_id']}/graph?relationship_type=RESOLVES_TO",
+        headers=headers,
+    )
+    assert res_rel.status_code == 200
+    data_rel = res_rel.json()
+    for edge in data_rel["edges"]:
+        assert edge["relationship_type"] == "RESOLVES_TO"
+
+    # Verify repeated graph calls do not create duplicate AssetRelationship records
+    with TestingSessionLocal() as db:
+        initial_rel_count = (
+            db.execute(
+                select(AssetRelationship).where(
+                    AssetRelationship.investigation_id == env["investigation_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+        initial_count = len(initial_rel_count)
+
+    # Trigger graph build again
+    res_again = client.get(
+        f"/api/investigations/{env['investigation_id']}/graph",
+        headers=headers,
+    )
+    assert res_again.status_code == 200
+
+    with TestingSessionLocal() as db:
+        after_rel_count = (
+            db.execute(
+                select(AssetRelationship).where(
+                    AssetRelationship.investigation_id == env["investigation_id"]
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(after_rel_count) == initial_count
+
+
+def test_24_batch_loading_scale_and_performance():
+    """Verify graph generation with 50+ assets executes in sub-second time without N+1 query regression."""
+    import time
+    target_id = None
+    try:
+        with TestingSessionLocal() as db:
+            analyst_id = uuid.UUID("71111111-1111-1111-1111-111111111111")
+            rand_code = uuid.uuid4().hex[:6].upper()
+            target = Target(
+                name=f"Scale Test Corp {rand_code}",
+                primary_domain=f"scale-{rand_code.lower()}.com",
+                organization="Scale Corp",
+                is_authorized=True,
+            )
+            db.add(target)
+            db.flush()
+            target_id = target.id
+
+            inv = Investigation(
+                reference_code=f"INV-SCALE-{rand_code}",
+                target_id=target.id,
+                title="Scale Assessment",
+                created_by_id=analyst_id,
+                status="active",
+            )
+            db.add(inv)
+            db.flush()
+
+            scan_run = ScanRun(
+                investigation_id=inv.id,
+                run_number=1,
+                status="completed",
+                started_at=datetime.now(timezone.utc),
+                completed_at=datetime.now(timezone.utc),
+            )
+            db.add(scan_run)
+            db.flush()
+
+            # Domain
+            dom_asset = Asset(
+                target_id=target.id,
+                investigation_id=inv.id,
+                asset_type="domain",
+                value=f"scale-{rand_code.lower()}.com",
+                source="ct_log",
+                last_scan_run_id=scan_run.id,
+            )
+            db.add(dom_asset)
+            db.flush()
+
+            domain = Domain(
+                asset_id=dom_asset.id,
+                domain_name=f"scale-{rand_code.lower()}.com",
+                registrar="Scale Registrar",
+                nameservers=["ns1.scale.com"],
+                status=["ok"],
+            )
+            db.add(domain)
+            db.flush()
+
+            # ASN
+            asn = ASN(
+                asn_number=99901,
+                name="Scale Global ASN",
+                country="US",
+                allocated_prefix="198.51.0.0/16",
+            )
+            db.add(asn)
+            db.flush()
+
+            # Vulnerability
+            vuln = Vulnerability(
+                cve_id=f"CVE-2024-SCALE{rand_code}",
+                title="Scale Test CVE",
+                description="Scale Test CVE description",
+                severity="HIGH",
+                cvss_v3_score=8.5,
+                source="cve_mitre",
+            )
+            db.add(vuln)
+            db.flush()
+
+            # Create 50 subdomains, IPs, DNS records, services, technologies, certs
+            for i in range(50):
+                sub_asset = Asset(
+                    target_id=target.id,
+                    investigation_id=inv.id,
+                    asset_type="subdomain",
+                    value=f"sub{i}.scale-{rand_code.lower()}.com",
+                    source="ct_log",
+                    last_scan_run_id=scan_run.id,
+                )
+                db.add(sub_asset)
+                db.flush()
+
+                sub = Subdomain(
+                    asset_id=sub_asset.id,
+                    domain_id=domain.id,
+                    subdomain_name=f"sub{i}.scale-{rand_code.lower()}.com",
+                    is_resolving=True,
+                    discovery_source="crt.sh",
+                )
+                db.add(sub)
+                db.flush()
+
+                ip_str = f"198.51.{i // 254}.{i % 254 + 1}"
+                ip_asset = Asset(
+                    target_id=target.id,
+                    investigation_id=inv.id,
+                    asset_type="ip",
+                    value=ip_str,
+                    source="dns",
+                    last_scan_run_id=scan_run.id,
+                )
+                db.add(ip_asset)
+                db.flush()
+
+                ip_rec = IPAddress(
+                    asset_id=ip_asset.id,
+                    ip_address=ip_str,
+                    ip_version=4,
+                    asn_id=asn.id,
+                    country="US",
+                    organization="Scale Corp",
+                )
+                db.add(ip_rec)
+                db.flush()
+
+                dns_rec = DNSRecord(
+                    subdomain_id=sub.id,
+                    scan_run_id=scan_run.id,
+                    record_type="A",
+                    value=ip_str,
+                    ttl=300,
+                )
+                db.add(dns_rec)
+
+                svc = ServiceExposure(
+                    asset_id=sub_asset.id,
+                    scan_run_id=scan_run.id,
+                    port=443,
+                    protocol="TCP",
+                    service_name="https",
+                    http_status=200,
+                )
+                db.add(svc)
+                db.flush()
+
+                tech = Technology(
+                    asset_id=sub_asset.id,
+                    scan_run_id=scan_run.id,
+                    service_id=svc.id,
+                    name="OpenSSL",
+                    version="1.1.1",
+                    category="library",
+                    evidence_source="tls_handshake",
+                    confidence=1.0,
+                )
+                db.add(tech)
+                db.flush()
+
+                tv = TechnologyVulnerability(
+                    technology_id=tech.id,
+                    vulnerability_id=vuln.id,
+                    match_confidence=1.0,
+                    verification_status="potential",
+                )
+                db.add(tv)
+
+            db.commit()
+            inv_id = inv.id
+
+        headers = get_auth_headers(analyst_id, "analyst_7a", "analyst")
+
+        start_time = time.perf_counter()
+        response = client.get(f"/api/investigations/{inv_id}/graph", headers=headers)
+        elapsed = time.perf_counter() - start_time
+
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check performance (< 0.5s for 50 subdomains + full topology)
+        assert elapsed < 0.5, f"Graph generation took {elapsed:.2f}s, exceeding 0.5s threshold"
+
+        # Check nodes & edges
+        assert data["statistics"]["node_count"] >= 150
+        assert data["statistics"]["edge_count"] >= 200
+        assert "domain" in data["statistics"]["nodes_by_type"]
+        assert "subdomain" in data["statistics"]["nodes_by_type"]
+        assert "ip" in data["statistics"]["nodes_by_type"]
+        assert "asn" in data["statistics"]["nodes_by_type"]
+        assert "service" in data["statistics"]["nodes_by_type"]
+        assert "technology" in data["statistics"]["nodes_by_type"]
+        assert "vulnerability" in data["statistics"]["nodes_by_type"]
+
+        assert "CONTAINS" in data["statistics"]["edges_by_type"]
+        assert "RESOLVES_TO" in data["statistics"]["edges_by_type"]
+        assert "ANNOUNCED_BY" in data["statistics"]["edges_by_type"]
+        assert "EXPOSES" in data["statistics"]["edges_by_type"]
+        assert "USES_TECHNOLOGY" in data["statistics"]["edges_by_type"]
+        assert "AFFECTED_BY" in data["statistics"]["edges_by_type"]
+
+    finally:
+        if target_id:
+            with TestingSessionLocal() as db:
+                t = db.get(Target, target_id)
+                if t:
+                    db.delete(t)
+                db.commit()

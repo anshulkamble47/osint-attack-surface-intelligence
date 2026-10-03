@@ -208,6 +208,10 @@ class DNSReachabilityResponse(BaseModel):
     unreachable: int
     dns_records_discovered: int
     services_discovered: int
+    status: Optional[str] = "completed"
+    warnings_count: Optional[int] = 0
+    timeouts_count: Optional[int] = 0
+    no_nameservers_count: Optional[int] = 0
     results: List[CandidateResolutionDetail] = Field(default_factory=list)
     completed_at: datetime
     note: str = (
@@ -289,6 +293,7 @@ class IPEnrichmentResponse(BaseModel):
     """Structured response returned by IP / ASN / RDAP Intelligence Enrichment (Stage 4)."""
     investigation_id: uuid.UUID
     scan_run_id: uuid.UUID
+    status: str = "completed"
     target_domain: str
     ips_processed: int
     public_ips: int
@@ -296,6 +301,7 @@ class IPEnrichmentResponse(BaseModel):
     asn_success: int
     rdap_success: int
     failed: int
+    warnings_count: int = 0
     results: List[IPEnrichmentDetail] = Field(default_factory=list)
     completed_at: datetime
     note: str = (
@@ -385,12 +391,16 @@ class FingerprintResponse(BaseModel):
     """Structured response returned by Technology Fingerprinting & HTTP Security Intelligence (Stage 5)."""
     investigation_id: uuid.UUID
     scan_run_id: uuid.UUID
+    status: str = "completed"
     target_domain: str
     services_processed: int
     reachable: int
     technologies_detected: int
     security_headers_analyzed: int
     tls_observations: int
+    timeouts_count: int = 0
+    ssrf_skips_count: int = 0
+    warnings_count: int = 0
     results: List[ServiceFingerprintDetail] = Field(default_factory=list)
     completed_at: datetime
     note: str = (

@@ -1,6 +1,8 @@
 """RDAP (Registration Data Access Protocol) intelligence service for IP address registration information."""
 
 import json
+import time
+import threading
 import urllib.parse
 import ipaddress
 from dataclasses import dataclass, field
@@ -258,10 +260,11 @@ class RDAPService:
     
     Features:
     - Queries authoritative RIR bootstrap endpoints dynamically based on IANA prefix allocations.
-    - Pre-connection DNS validation on all target and redirect destination hostnames.
+    - Pre-connection DNS validation on all target and redirect destination hostnames with TTL caching.
     - Rejects targets resolving to private, loopback, link-local, multicast, or reserved IPs.
     - Validates redirects against an approved list of RIR domains.
-    - Enforces strict response size bounds (128 KB) and request timeouts.
+    - Enforces strict response size bounds (128 KB) and bounded request timeouts.
+    - Reuses connection pool for low-latency concurrent HTTP/HTTPS communication.
     - Normalizes diverse RIR schema formats into a consistent internal model.
     """
 
@@ -275,14 +278,62 @@ class RDAPService:
         client: Optional[httpx.Client] = None,
         bootstrap: Optional[RDAPBootstrap] = None,
         resolver: Optional[Any] = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout: Union[float, httpx.Timeout] = DEFAULT_TIMEOUT_SECONDS,
         max_redirects: int = DEFAULT_MAX_REDIRECTS,
     ):
         self._client = client
+        self._client_pool: Optional[httpx.Client] = None
+        self._client_lock = threading.Lock()
         self._bootstrap = bootstrap or RDAPBootstrap()
         self._resolver = resolver
         self._timeout = timeout
         self._max_redirects = max_redirects
+
+        # Host SSRF validation cache: host -> (is_valid: bool, timestamp: float)
+        self._host_validation_cache: Dict[str, Tuple[bool, float]] = {}
+        self._cache_lock = threading.Lock()
+        self._cache_ttl = 300.0  # 5 minutes TTL
+
+    def _get_client(self) -> httpx.Client:
+        """Get or initialize thread-safe persistent connection-pooled HTTP client."""
+        if self._client is not None:
+            return self._client
+        with self._client_lock:
+            if self._client_pool is None or self._client_pool.is_closed:
+                timeout_config = (
+                    self._timeout
+                    if isinstance(self._timeout, httpx.Timeout)
+                    else httpx.Timeout(
+                        connect=min(2.0, float(self._timeout)),
+                        read=float(self._timeout),
+                        write=2.0,
+                        pool=2.0,
+                    )
+                )
+                self._client_pool = httpx.Client(
+                    timeout=timeout_config,
+                    limits=httpx.Limits(
+                        max_keepalive_connections=20,
+                        max_connections=50,
+                        keepalive_expiry=30.0,
+                    ),
+                    follow_redirects=False,
+                    verify=True,
+                )
+            return self._client_pool
+
+    def close(self) -> None:
+        """Close internal connection pool."""
+        with self._client_lock:
+            if self._client_pool is not None and not self._client_pool.is_closed:
+                self._client_pool.close()
+                self._client_pool = None
+
+    def __enter__(self) -> "RDAPService":
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def _get_resolver(self) -> dns.resolver.Resolver:
         if self._resolver is not None:
@@ -296,6 +347,7 @@ class RDAPService:
         """
         SSRF Hardening: Verify destination is an authorized HTTPS/HTTP endpoint on an approved RIR host
         and that all resolved A/AAAA addresses are strictly public, globally routable IPs.
+        Caches validated hostnames with a 5-minute TTL to eliminate redundant DNS round-trips.
         """
         try:
             parsed = urllib.parse.urlparse(url)
@@ -318,7 +370,15 @@ class RDAPService:
             except ValueError:
                 pass
 
-            # 3. Pre-connection DNS resolution: check that resolved A/AAAA records exist and are all public
+            # 3. Check cached validation
+            now = time.time()
+            with self._cache_lock:
+                if host in self._host_validation_cache:
+                    valid, ts = self._host_validation_cache[host]
+                    if now - ts < self._cache_ttl:
+                        return valid
+
+            # 4. Pre-connection DNS resolution: check that resolved A/AAAA records exist and are all public
             resolved_ips: List[str] = []
             resolver = self._get_resolver()
 
@@ -337,18 +397,23 @@ class RDAPService:
                     continue
 
             if not resolved_ips:
-                # If no records resolved at all, reject request to prevent connection to unverified host
                 logger.warning(f"RDAP target '{host}' rejected: DNS resolution returned no A/AAAA records")
+                with self._cache_lock:
+                    self._host_validation_cache[host] = (False, now)
                 return False
 
-            # 4. Reject if ANY resolved address is private, loopback, link-local, multicast, or reserved
+            # 5. Reject if ANY resolved address is private, loopback, link-local, multicast, or reserved
             for rip in resolved_ips:
                 if not is_public_ip(rip):
                     logger.warning(
                         f"SSRF Protection: RDAP destination '{host}' resolved to non-public/reserved IP '{rip}'. Rejecting."
                     )
+                    with self._cache_lock:
+                        self._host_validation_cache[host] = (False, now)
                     return False
 
+            with self._cache_lock:
+                self._host_validation_cache[host] = (True, now)
             return True
         except Exception as exc:
             logger.warning(f"RDAP endpoint validation error for '{url}': {exc}")
@@ -395,92 +460,43 @@ class RDAPService:
 
         redirect_count = 0
         raw_body_bytes = b""
+        client = self._get_client()
 
         try:
             while redirect_count <= self._max_redirects:
-                if self._client:
-                    # Test client mode
-                    resp = self._client.get(
-                        current_url,
-                        headers=headers,
-                        timeout=self._timeout,
-                        follow_redirects=False,
-                    )
-                    status_code = resp.status_code
+                resp = client.get(
+                    current_url,
+                    headers=headers,
+                    timeout=self._timeout,
+                    follow_redirects=False,
+                )
+                status_code = resp.status_code
 
-                    if status_code in (301, 302, 303, 307, 308):
-                        location = resp.headers.get("Location") or resp.headers.get("location")
-                        if location:
-                            next_url = urllib.parse.urljoin(current_url, location)
-                            redirect_count += 1
-                            if redirect_count > self._max_redirects:
-                                logger.warning(f"RDAP redirect limit ({self._max_redirects}) exceeded for IP '{normalized_ip}'")
-                                return None
+                if status_code in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location") or resp.headers.get("location")
+                    if location:
+                        next_url = urllib.parse.urljoin(current_url, location)
+                        redirect_count += 1
+                        if redirect_count > self._max_redirects:
+                            logger.warning(f"RDAP redirect limit ({self._max_redirects}) exceeded for IP '{normalized_ip}'")
+                            return None
 
-                            if not self._validate_rdap_endpoint(next_url):
-                                logger.warning(f"RDAP redirect to unauthorized or non-public host blocked: {next_url}")
-                                return None
+                        if not self._validate_rdap_endpoint(next_url):
+                            logger.warning(f"RDAP redirect to unauthorized or non-public host blocked: {next_url}")
+                            return None
 
-                            current_url = next_url
-                            continue
+                        current_url = next_url
+                        continue
 
-                    if status_code == 404:
-                        logger.debug(f"RDAP 404 not found for IP '{normalized_ip}'")
-                        return None
-                    elif status_code != 200:
-                        logger.warning(f"RDAP returned status {status_code} for IP '{normalized_ip}'")
-                        return None
+                if status_code == 404:
+                    logger.debug(f"RDAP 404 not found for IP '{normalized_ip}'")
+                    return None
+                elif status_code != 200:
+                    logger.warning(f"RDAP returned status {status_code} for IP '{normalized_ip}'")
+                    return None
 
-                    raw_body_bytes = resp.content[: self.MAX_BODY_BYTES] if hasattr(resp, "content") else (resp.text.encode("utf-8")[: self.MAX_BODY_BYTES])
-                    break
-
-                else:
-                    # Production streaming client
-                    with httpx.Client(
-                        timeout=self._timeout,
-                        follow_redirects=False,
-                        verify=True,
-                    ) as client:
-                        with client.stream(
-                            "GET",
-                            current_url,
-                            headers=headers,
-                            timeout=self._timeout,
-                        ) as resp:
-                            status_code = resp.status_code
-
-                            if status_code in (301, 302, 303, 307, 308):
-                                location = resp.headers.get("Location") or resp.headers.get("location")
-                                if location:
-                                    next_url = urllib.parse.urljoin(current_url, location)
-                                    redirect_count += 1
-                                    if redirect_count > self._max_redirects:
-                                        logger.warning(f"RDAP redirect limit ({self._max_redirects}) exceeded for IP '{normalized_ip}'")
-                                        return None
-
-                                    if not self._validate_rdap_endpoint(next_url):
-                                        logger.warning(f"RDAP redirect to unauthorized or non-public host blocked: {next_url}")
-                                        return None
-
-                                    current_url = next_url
-                                    continue
-
-                            if status_code == 404:
-                                logger.debug(f"RDAP 404 not found for IP '{normalized_ip}'")
-                                return None
-                            elif status_code != 200:
-                                logger.warning(f"RDAP returned status {status_code} for IP '{normalized_ip}'")
-                                return None
-
-                            chunks = []
-                            bytes_read = 0
-                            for chunk in resp.iter_bytes(chunk_size=4096):
-                                chunks.append(chunk)
-                                bytes_read += len(chunk)
-                                if bytes_read >= self.MAX_BODY_BYTES:
-                                    break
-                            raw_body_bytes = b"".join(chunks)
-                            break
+                raw_body_bytes = resp.content[: self.MAX_BODY_BYTES] if hasattr(resp, "content") else (resp.text.encode("utf-8")[: self.MAX_BODY_BYTES])
+                break
 
             if not raw_body_bytes:
                 return None
@@ -490,8 +506,8 @@ class RDAPService:
 
             return self._parse_rdap_json(normalized_ip, rdap_json, raw_text)
 
-        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException):
-            logger.warning(f"Timeout during RDAP lookup for IP '{normalized_ip}'")
+        except (httpx.ConnectTimeout, httpx.ReadTimeout, httpx.TimeoutException) as exc:
+            logger.warning(f"Timeout during RDAP lookup for IP '{normalized_ip}': {exc}")
             return None
         except (httpx.ConnectError, httpx.NetworkError) as exc:
             logger.warning(f"Network error during RDAP lookup for IP '{normalized_ip}': {exc}")

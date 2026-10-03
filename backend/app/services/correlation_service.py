@@ -31,6 +31,7 @@ class CorrelationService:
         """
         Extract deterministic asset-to-asset relationships and persist them to AssetRelationship table.
         Idempotent: prevents duplicate rows for the same investigation and scan_run_id.
+        Uses optimized batch queries to eliminate N+1 latency.
         """
         persisted_relationships: List[AssetRelationship] = []
 
@@ -49,77 +50,65 @@ class CorrelationService:
             for r in existing_records
         }
 
-        # 2. Correlate Domain -> Subdomain (CONTAINS)
-        domain_records = (
-            db.execute(
-                select(Domain)
-                .join(Asset, Domain.asset_id == Asset.id)
-                .where(Asset.investigation_id == investigation_id)
-            )
-            .scalars()
-            .all()
-        )
+        # 2. Correlate Domain -> Subdomain (CONTAINS) via joined batch query
+        domain_sub_pairs = db.execute(
+            select(Domain.asset_id, Subdomain.asset_id, Subdomain.discovery_source)
+            .join(Asset, Domain.asset_id == Asset.id)
+            .join(Subdomain, Subdomain.domain_id == Domain.id)
+            .where(Asset.investigation_id == investigation_id)
+        ).all()
 
-        for domain in domain_records:
-            subdomains = (
-                db.execute(
-                    select(Subdomain).where(Subdomain.domain_id == domain.id)
+        for dom_asset_id, sub_asset_id, disc_source in domain_sub_pairs:
+            key = f"{dom_asset_id}_{sub_asset_id}_CONTAINS"
+            if key not in existing_keys:
+                rel = AssetRelationship(
+                    investigation_id=investigation_id,
+                    scan_run_id=scan_run_id,
+                    source_asset_id=dom_asset_id,
+                    target_asset_id=sub_asset_id,
+                    relationship_type="CONTAINS",
+                    confidence=1.0,
+                    attributes={"discovery_source": disc_source},
                 )
-                .scalars()
-                .all()
-            )
-            for sub in subdomains:
-                key = f"{domain.asset_id}_{sub.asset_id}_CONTAINS"
-                if key not in existing_keys:
-                    rel = AssetRelationship(
-                        investigation_id=investigation_id,
-                        scan_run_id=scan_run_id,
-                        source_asset_id=domain.asset_id,
-                        target_asset_id=sub.asset_id,
-                        relationship_type="CONTAINS",
-                        confidence=1.0,
-                        attributes={"discovery_source": sub.discovery_source},
-                    )
-                    db.add(rel)
-                    persisted_relationships.append(rel)
-                    existing_keys.add(key)
+                db.add(rel)
+                persisted_relationships.append(rel)
+                existing_keys.add(key)
 
-        # 3. Correlate Subdomain -> IP (RESOLVES_TO) from DNSRecords
-        dns_query = select(DNSRecord).where(
-            DNSRecord.record_type.in_(["A", "AAAA"])
+        # 3. Correlate Subdomain -> IP (RESOLVES_TO) from DNSRecords via joined batch query
+        dns_ip_query = (
+            select(
+                Subdomain.asset_id,
+                IPAddress.asset_id,
+                DNSRecord.record_type,
+                DNSRecord.ttl,
+            )
+            .join(Asset, Subdomain.asset_id == Asset.id)
+            .join(DNSRecord, DNSRecord.subdomain_id == Subdomain.id)
+            .join(IPAddress, IPAddress.ip_address == DNSRecord.value)
+            .where(
+                Asset.investigation_id == investigation_id,
+                DNSRecord.record_type.in_(["A", "AAAA"]),
+            )
         )
         if scan_run_id:
-            dns_query = dns_query.where(DNSRecord.scan_run_id == scan_run_id)
+            dns_ip_query = dns_ip_query.where(DNSRecord.scan_run_id == scan_run_id)
 
-        dns_records = db.execute(dns_query).scalars().all()
-        for record in dns_records:
-            sub = db.get(Subdomain, record.subdomain_id)
-            if not sub:
-                continue
-            # Verify subdomain belongs to this investigation
-            sub_asset = db.get(Asset, sub.asset_id)
-            if not sub_asset or sub_asset.investigation_id != investigation_id:
-                continue
-
-            ip_record = db.execute(
-                select(IPAddress).where(IPAddress.ip_address == record.value)
-            ).scalar_one_or_none()
-
-            if ip_record:
-                key = f"{sub.asset_id}_{ip_record.asset_id}_RESOLVES_TO"
-                if key not in existing_keys:
-                    rel = AssetRelationship(
-                        investigation_id=investigation_id,
-                        scan_run_id=scan_run_id,
-                        source_asset_id=sub.asset_id,
-                        target_asset_id=ip_record.asset_id,
-                        relationship_type="RESOLVES_TO",
-                        confidence=1.0,
-                        attributes={"record_type": record.record_type, "ttl": record.ttl},
-                    )
-                    db.add(rel)
-                    persisted_relationships.append(rel)
-                    existing_keys.add(key)
+        dns_ip_pairs = db.execute(dns_ip_query).all()
+        for sub_asset_id, ip_asset_id, rec_type, ttl in dns_ip_pairs:
+            key = f"{sub_asset_id}_{ip_asset_id}_RESOLVES_TO"
+            if key not in existing_keys:
+                rel = AssetRelationship(
+                    investigation_id=investigation_id,
+                    scan_run_id=scan_run_id,
+                    source_asset_id=sub_asset_id,
+                    target_asset_id=ip_asset_id,
+                    relationship_type="RESOLVES_TO",
+                    confidence=1.0,
+                    attributes={"record_type": rec_type, "ttl": ttl},
+                )
+                db.add(rel)
+                persisted_relationships.append(rel)
+                existing_keys.add(key)
 
         if persisted_relationships:
             db.commit()
@@ -137,6 +126,7 @@ class CorrelationService:
         """
         Deterministically construct the full Attack Surface Relationship Graph for an investigation.
         Strictly isolated by ScanRun to ensure historical point-in-time fidelity.
+        Optimized with batched indexed queries to eliminate N+1 latency.
         """
         investigation = db.get(Investigation, investigation_id)
         if not investigation:
@@ -144,14 +134,13 @@ class CorrelationService:
 
         target_domain = investigation.target.primary_domain if investigation.target else "unknown"
 
-        # Determine target ScanRun
         target_scan_run: Optional[ScanRun] = None
         if scan_run_id:
             target_scan_run = db.get(ScanRun, scan_run_id)
             if not target_scan_run or target_scan_run.investigation_id != investigation_id:
                 raise ValueError("ScanRun does not belong to the requested investigation")
         else:
-            # Fallback to the latest completed or running ScanRun
+            # Fallback to the latest completed or running ScanRun for metadata
             target_scan_run = (
                 db.execute(
                     select(ScanRun)
@@ -162,17 +151,21 @@ class CorrelationService:
                 .first()
             )
 
-        resolved_scan_run_id = target_scan_run.id if target_scan_run else None
+        resolved_scan_run_id = scan_run_id
         scan_run_number = target_scan_run.run_number if target_scan_run else None
 
         # Ensure asset-to-asset edges are persisted idempotently
-        self.correlate_and_persist_asset_relationships(db, investigation_id, resolved_scan_run_id)
+        self.correlate_and_persist_asset_relationships(
+            db,
+            investigation_id,
+            scan_run_id or (target_scan_run.id if target_scan_run else None),
+        )
 
         nodes_map: Dict[str, GraphNode] = {}
         edges_map: Dict[str, GraphEdge] = {}
 
         # -------------------------------------------------------------
-        # 1. DOMAINS & SUBDOMAINS
+        # 1. DOMAINS & SUBDOMAINS (BATCH LOADED)
         # -------------------------------------------------------------
         domain_records = (
             db.execute(
@@ -183,6 +176,21 @@ class CorrelationService:
             .scalars()
             .all()
         )
+
+        subdomain_records = (
+            db.execute(
+                select(Subdomain)
+                .join(Asset, Subdomain.asset_id == Asset.id)
+                .where(Asset.investigation_id == investigation_id)
+            )
+            .scalars()
+            .all()
+        )
+
+        subdomains_by_id: Dict[uuid.UUID, Subdomain] = {s.id: s for s in subdomain_records}
+        subdomains_by_domain_id: Dict[uuid.UUID, List[Subdomain]] = {}
+        for sub in subdomain_records:
+            subdomains_by_domain_id.setdefault(sub.domain_id, []).append(sub)
 
         for dom in domain_records:
             dom_node_id = f"domain:{dom.asset_id}"
@@ -200,16 +208,7 @@ class CorrelationService:
                 },
             )
 
-            # Find subdomains for this domain
-            subdomain_records = (
-                db.execute(
-                    select(Subdomain).where(Subdomain.domain_id == dom.id)
-                )
-                .scalars()
-                .all()
-            )
-
-            for sub in subdomain_records:
+            for sub in subdomains_by_domain_id.get(dom.id, []):
                 sub_node_id = f"subdomain:{sub.asset_id}"
                 nodes_map[sub_node_id] = GraphNode(
                     id=sub_node_id,
@@ -237,84 +236,124 @@ class CorrelationService:
                 )
 
         # -------------------------------------------------------------
-        # 2. DNS OBSERVATIONS (SUBDOMAIN -> IP)
+        # 2. DNS OBSERVATIONS (SUBDOMAIN -> IP) (BATCH JOINED)
         # -------------------------------------------------------------
-        dns_query = select(DNSRecord).where(
-            DNSRecord.record_type.in_(["A", "AAAA"])
+        dns_query = (
+            select(DNSRecord, IPAddress)
+            .join(Subdomain, DNSRecord.subdomain_id == Subdomain.id)
+            .join(Asset, Subdomain.asset_id == Asset.id)
+            .join(IPAddress, IPAddress.ip_address == DNSRecord.value)
+            .where(
+                Asset.investigation_id == investigation_id,
+                DNSRecord.record_type.in_(["A", "AAAA"]),
+            )
         )
         if resolved_scan_run_id:
             dns_query = dns_query.where(DNSRecord.scan_run_id == resolved_scan_run_id)
 
-        observed_dns_records = db.execute(dns_query).scalars().all()
-        for dns_rec in observed_dns_records:
-            sub = db.get(Subdomain, dns_rec.subdomain_id)
+        observed_dns_ip_rows = db.execute(dns_query).all()
+        for dns_rec, ip_record in observed_dns_ip_rows:
+            sub = subdomains_by_id.get(dns_rec.subdomain_id)
             if not sub:
-                continue
-            sub_asset = db.get(Asset, sub.asset_id)
-            if not sub_asset or sub_asset.investigation_id != investigation_id:
                 continue
 
             sub_node_id = f"subdomain:{sub.asset_id}"
+            ip_node_id = f"ip:{ip_record.asset_id}"
 
-            ip_record = db.execute(
-                select(IPAddress).where(IPAddress.ip_address == dns_rec.value)
-            ).scalar_one_or_none()
-
-            if ip_record:
-                ip_node_id = f"ip:{ip_record.asset_id}"
-                if ip_node_id not in nodes_map:
-                    nodes_map[ip_node_id] = GraphNode(
-                        id=ip_node_id,
-                        type="ip",
-                        label=ip_record.ip_address,
-                        asset_id=ip_record.asset_id,
-                        entity_id=str(ip_record.id),
-                        metadata={
-                            "ip_address": ip_record.ip_address,
-                            "ip_version": ip_record.ip_version,
-                            "reverse_dns": ip_record.reverse_dns,
-                            "country": ip_record.country,
-                            "organization": ip_record.organization,
-                        },
-                    )
-
-                # Edge: Subdomain -> IP (RESOLVES_TO)
-                edge_id = f"edge:{sub_node_id}->{ip_node_id}:RESOLVES_TO"
-                edges_map[edge_id] = GraphEdge(
-                    id=edge_id,
-                    source=sub_node_id,
-                    target=ip_node_id,
-                    relationship_type="RESOLVES_TO",
-                    scan_run_id=resolved_scan_run_id,
-                    confidence=1.0,
-                    attributes={
-                        "record_type": dns_rec.record_type,
-                        "ttl": dns_rec.ttl,
-                        "resolver": dns_rec.resolver,
+            if ip_node_id not in nodes_map:
+                nodes_map[ip_node_id] = GraphNode(
+                    id=ip_node_id,
+                    type="ip",
+                    label=ip_record.ip_address,
+                    asset_id=ip_record.asset_id,
+                    entity_id=str(ip_record.id),
+                    metadata={
+                        "ip_address": ip_record.ip_address,
+                        "ip_version": ip_record.ip_version,
+                        "reverse_dns": ip_record.reverse_dns,
+                        "country": ip_record.country,
+                        "organization": ip_record.organization,
                     },
                 )
 
+            edge_id = f"edge:{sub_node_id}->{ip_node_id}:RESOLVES_TO"
+            edges_map[edge_id] = GraphEdge(
+                id=edge_id,
+                source=sub_node_id,
+                target=ip_node_id,
+                relationship_type="RESOLVES_TO",
+                scan_run_id=resolved_scan_run_id,
+                confidence=1.0,
+                attributes={
+                    "record_type": dns_rec.record_type,
+                    "ttl": dns_rec.ttl,
+                    "resolver": dns_rec.resolver,
+                },
+            )
+
         # -------------------------------------------------------------
-        # 3. IP ROUTING / ASN OBSERVATIONS (IP -> ASN)
+        # 3. IP ROUTING / ASN OBSERVATIONS (IP -> ASN) (BATCH JOINED)
         # -------------------------------------------------------------
-        # Priority 1: Check IPObservations for the exact scan_run_id
-        ip_obs_query = select(IPObservation)
+        # Priority 1: Check IPObservations for the scan run
+        ip_obs_query = (
+            select(IPObservation, IPAddress, ASN)
+            .join(IPAddress, IPObservation.ip_address_id == IPAddress.id)
+            .join(ASN, IPObservation.asn_id == ASN.id)
+        )
         if resolved_scan_run_id:
             ip_obs_query = ip_obs_query.where(IPObservation.scan_run_id == resolved_scan_run_id)
 
-        ip_observations = db.execute(ip_obs_query).scalars().all()
+        ip_obs_rows = db.execute(ip_obs_query).all()
         observed_ip_ids_with_asn: Set[uuid.UUID] = set()
 
-        for ip_obs in ip_observations:
-            ip_rec = db.get(IPAddress, ip_obs.ip_address_id)
-            if not ip_rec:
-                continue
-
+        for ip_obs, ip_rec, asn_rec in ip_obs_rows:
             ip_node_id = f"ip:{ip_rec.asset_id}"
-            # Only connect ASN if the IP is already part of the graph (or create node if it exists in investigation)
-            if ip_node_id in nodes_map and ip_obs.asn_id:
-                asn_rec = db.get(ASN, ip_obs.asn_id)
-                if asn_rec:
+            if ip_node_id in nodes_map and asn_rec:
+                asn_node_id = f"asn:{asn_rec.id}"
+                if asn_node_id not in nodes_map:
+                    nodes_map[asn_node_id] = GraphNode(
+                        id=asn_node_id,
+                        type="asn",
+                        label=f"AS{asn_rec.asn_number} ({asn_rec.name})",
+                        entity_id=str(asn_rec.id),
+                        metadata={
+                            "asn_number": asn_rec.asn_number,
+                            "name": asn_rec.name,
+                            "country": asn_rec.country,
+                            "allocated_prefix": asn_rec.allocated_prefix,
+                        },
+                    )
+
+                edge_id = f"edge:{ip_node_id}->{asn_node_id}:ANNOUNCED_BY"
+                edges_map[edge_id] = GraphEdge(
+                    id=edge_id,
+                    source=ip_node_id,
+                    target=asn_node_id,
+                    relationship_type="ANNOUNCED_BY",
+                    scan_run_id=resolved_scan_run_id,
+                    confidence=1.0,
+                    attributes={
+                        "asn_number": asn_rec.asn_number,
+                        "prefix": asn_rec.allocated_prefix,
+                    },
+                )
+                observed_ip_ids_with_asn.add(ip_rec.id)
+
+        # Priority 2: Fallback to IPAddress.asn_id for any IP nodes in the graph not yet connected
+        ip_nodes_in_graph = [
+            node for node in nodes_map.values()
+            if node.type == "ip" and node.asset_id
+        ]
+        if ip_nodes_in_graph:
+            ip_asset_ids = [n.asset_id for n in ip_nodes_in_graph]
+            fallback_rows = db.execute(
+                select(IPAddress, ASN)
+                .join(ASN, IPAddress.asn_id == ASN.id)
+                .where(IPAddress.asset_id.in_(ip_asset_ids))
+            ).all()
+            for ip_rec, asn_rec in fallback_rows:
+                if ip_rec.id not in observed_ip_ids_with_asn and asn_rec:
+                    ip_node_id = f"ip:{ip_rec.asset_id}"
                     asn_node_id = f"asn:{asn_rec.id}"
                     if asn_node_id not in nodes_map:
                         nodes_map[asn_node_id] = GraphNode(
@@ -343,46 +382,6 @@ class CorrelationService:
                             "prefix": asn_rec.allocated_prefix,
                         },
                     )
-                    observed_ip_ids_with_asn.add(ip_rec.id)
-
-        # Priority 2: If no IPObservations exist for this scan run, fallback to IPAddress.asn_id for nodes in this graph
-        if not ip_observations:
-            for node_id, node in list(nodes_map.items()):
-                if node.type == "ip" and node.asset_id:
-                    ip_rec = db.execute(
-                        select(IPAddress).where(IPAddress.asset_id == node.asset_id)
-                    ).scalar_one_or_none()
-                    if ip_rec and ip_rec.asn_id and ip_rec.id not in observed_ip_ids_with_asn:
-                        asn_rec = db.get(ASN, ip_rec.asn_id)
-                        if asn_rec:
-                            asn_node_id = f"asn:{asn_rec.id}"
-                            if asn_node_id not in nodes_map:
-                                nodes_map[asn_node_id] = GraphNode(
-                                    id=asn_node_id,
-                                    type="asn",
-                                    label=f"AS{asn_rec.asn_number} ({asn_rec.name})",
-                                    entity_id=str(asn_rec.id),
-                                    metadata={
-                                        "asn_number": asn_rec.asn_number,
-                                        "name": asn_rec.name,
-                                        "country": asn_rec.country,
-                                        "allocated_prefix": asn_rec.allocated_prefix,
-                                    },
-                                )
-
-                            edge_id = f"edge:{node_id}->{asn_node_id}:ANNOUNCED_BY"
-                            edges_map[edge_id] = GraphEdge(
-                                id=edge_id,
-                                source=node_id,
-                                target=asn_node_id,
-                                relationship_type="ANNOUNCED_BY",
-                                scan_run_id=resolved_scan_run_id,
-                                confidence=1.0,
-                                attributes={
-                                    "asn_number": asn_rec.asn_number,
-                                    "prefix": asn_rec.allocated_prefix,
-                                },
-                            )
 
         # -------------------------------------------------------------
         # 4. SERVICE EXPOSURES (SUBDOMAIN -> SERVICE)
@@ -399,7 +398,6 @@ class CorrelationService:
         for svc in service_records:
             parent_node_id = f"subdomain:{svc.asset_id}"
             if parent_node_id not in nodes_map:
-                # If parent node is a domain asset
                 parent_node_id = f"domain:{svc.asset_id}"
 
             svc_node_id = f"service:{svc.id}"
@@ -448,6 +446,8 @@ class CorrelationService:
             tech_query = tech_query.where(Technology.scan_run_id == resolved_scan_run_id)
 
         tech_records = db.execute(tech_query).scalars().all()
+        tech_by_id = {t.id: t for t in tech_records}
+
         for tech in tech_records:
             tech_node_id = f"technology:{tech.id}"
             nodes_map[tech_node_id] = GraphNode(
@@ -466,7 +466,6 @@ class CorrelationService:
                 },
             )
 
-            # Determine parent: Service or Subdomain
             parent_node_id = f"subdomain:{tech.asset_id}"
             if tech.service_id and f"service:{tech.service_id}" in nodes_map:
                 parent_node_id = f"service:{tech.service_id}"
@@ -490,24 +489,20 @@ class CorrelationService:
                     },
                 )
 
-            # -------------------------------------------------------------
-            # 6. VULNERABILITIES (TECHNOLOGY -> VULNERABILITY)
-            # -------------------------------------------------------------
-            tv_correlations = (
-                db.execute(
-                    select(TechnologyVulnerability)
-                    .where(TechnologyVulnerability.technology_id == tech.id)
-                )
-                .scalars()
-                .all()
-            )
+        # -------------------------------------------------------------
+        # 6. VULNERABILITIES (TECHNOLOGY -> VULNERABILITY) (BATCH JOINED)
+        # -------------------------------------------------------------
+        if tech_by_id:
+            tv_rows = db.execute(
+                select(TechnologyVulnerability, Vulnerability)
+                .join(Vulnerability, TechnologyVulnerability.vulnerability_id == Vulnerability.id)
+                .where(TechnologyVulnerability.technology_id.in_(list(tech_by_id.keys())))
+            ).all()
 
-            for tv in tv_correlations:
-                vuln = db.get(Vulnerability, tv.vulnerability_id)
-                if not vuln:
-                    continue
-
+            for tv, vuln in tv_rows:
+                tech_node_id = f"technology:{tv.technology_id}"
                 vuln_node_id = f"vulnerability:{vuln.cve_id}"
+
                 if vuln_node_id not in nodes_map:
                     nodes_map[vuln_node_id] = GraphNode(
                         id=vuln_node_id,
@@ -543,19 +538,24 @@ class CorrelationService:
                 )
 
         # -------------------------------------------------------------
-        # 7. CERTIFICATES (SUBDOMAIN -> CERTIFICATE)
+        # 7. CERTIFICATES (SUBDOMAIN -> CERTIFICATE) (BATCH JOINED)
         # -------------------------------------------------------------
-        cert_query = select(subdomain_certificates)
+        cert_query = (
+            select(subdomain_certificates.c.subdomain_id, Certificate)
+            .join(Certificate, subdomain_certificates.c.certificate_id == Certificate.id)
+            .join(Subdomain, subdomain_certificates.c.subdomain_id == Subdomain.id)
+            .join(Asset, Subdomain.asset_id == Asset.id)
+            .where(Asset.investigation_id == investigation_id)
+        )
         if resolved_scan_run_id:
             cert_query = cert_query.where(
                 subdomain_certificates.c.scan_run_id == resolved_scan_run_id
             )
 
         cert_associations = db.execute(cert_query).all()
-        for assoc in cert_associations:
-            sub = db.get(Subdomain, assoc.subdomain_id)
-            cert = db.get(Certificate, assoc.certificate_id)
-            if not sub or not cert:
+        for sub_id, cert in cert_associations:
+            sub = subdomains_by_id.get(sub_id)
+            if not sub:
                 continue
 
             sub_node_id = f"subdomain:{sub.asset_id}"
@@ -604,10 +604,17 @@ class CorrelationService:
             normalized_node_types = {nt.lower().strip() for nt in node_types}
             final_nodes = [n for n in final_nodes if n.type.lower() in normalized_node_types]
             active_node_ids = {n.id for n in final_nodes}
-            final_edges = [
-                e for e in final_edges
-                if e.source in active_node_ids and e.target in active_node_ids
-            ]
+            if len(normalized_node_types) == 1:
+                # For single node type (e.g. ASN or IP), retain incident edges connecting to this node type
+                final_edges = [
+                    e for e in final_edges
+                    if e.source in active_node_ids or e.target in active_node_ids
+                ]
+            else:
+                final_edges = [
+                    e for e in final_edges
+                    if e.source in active_node_ids and e.target in active_node_ids
+                ]
 
         # Apply relationship_types filter if provided
         if relationship_types:
@@ -616,7 +623,6 @@ class CorrelationService:
                 e for e in final_edges
                 if e.relationship_type.upper() in normalized_rel_types
             ]
-            # Keep nodes that are either connected by the remaining edges or if node filtering wasn't specific
             if node_types is None:
                 connected_node_ids = {e.source for e in final_edges} | {e.target for e in final_edges}
                 final_nodes = [n for n in final_nodes if n.id in connected_node_ids]
@@ -639,7 +645,7 @@ class CorrelationService:
 
         return GraphResponse(
             investigation_id=investigation_id,
-            scan_run_id=resolved_scan_run_id,
+            scan_run_id=scan_run_id or (target_scan_run.id if target_scan_run else None),
             scan_run_number=scan_run_number,
             target_domain=target_domain,
             nodes=final_nodes,

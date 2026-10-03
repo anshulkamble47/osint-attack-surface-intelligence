@@ -860,3 +860,116 @@ def test_18_invalid_status_update_rejection(populated_findings_environment):
     )
     assert res.status_code == 422 or res.status_code == 400
 
+
+def test_19_requires_verification_semantics_survives_finding_generation(populated_findings_environment):
+    """
+    Verify that an unversioned technology (e.g. Cloudflare) correlated as REQUIRES_VERIFICATION:
+    1. Retains correlation_status="REQUIRES_VERIFICATION" in Finding entity and API responses.
+    2. Retains verification_status="requires_verification" and is_version_supported=False.
+    3. is_verified remains False (passive correlation is not proof of exploitability).
+    4. Retains "Potential Vulnerability: ..." wording in title.
+    5. High contextual risk is permitted (e.g. public perimeter reachability) while explicitly flagged as requiring verification.
+    """
+    env = populated_findings_environment
+    headers = get_auth_headers(env["analyst_id"], "analyst_8a", "analyst")
+
+    cve_id = "CVE-2017-7235"
+    with TestingSessionLocal() as db:
+        # Create unversioned technology
+        tech_unversioned = Technology(
+            asset_id=env["sub_asset_id"],
+            scan_run_id=env["scan_run_id"],
+            name="Cloudflare",
+            version=None,
+            cpe="cpe:2.3:a:cloudflare:cloudflare:*:*:*:*:*:*:*:*",
+            category="cdn",
+            confidence=1.0,
+            evidence_source="server_header",
+        )
+        db.add(tech_unversioned)
+        db.flush()
+
+        vuln_unversioned = Vulnerability(
+            cve_id=cve_id,
+            title="Cloudflare Buffer Overflow",
+            description="Buffer overflow in Cloudflare reverse proxy.",
+            severity="CRITICAL",
+            cvss_v3_score=8.8,
+            source="NVD",
+            references=[],
+        )
+        db.add(vuln_unversioned)
+        db.flush()
+
+        tv_unversioned = TechnologyVulnerability(
+            technology_id=tech_unversioned.id,
+            vulnerability_id=vuln_unversioned.id,
+            match_confidence=0.5,
+            verification_status="requires_verification",
+            notes='{"correlation_status": "REQUIRES_VERIFICATION", "match_basis": "Observed technology \'Cloudflare\' without verifiable version. CPE/advisory matches \'CVE-2017-7235\'. Verification required.", "is_kev": false}',
+        )
+        db.add(tv_unversioned)
+        db.commit()
+
+    # Generate findings
+    gen_res = client.post(
+        f"/api/investigations/{env['investigation_id']}/findings/generate?scan_run_id={env['scan_run_id']}",
+        headers=headers,
+    )
+    assert gen_res.status_code == 200
+    data = gen_res.json()
+
+    # Find the Cloudflare finding
+    cf_finding = next((f for f in data["findings"] if cve_id in f["title"]), None)
+    assert cf_finding is not None, f"Expected finding for {cve_id} not found in generated findings"
+
+    # Verify semantics
+    assert cf_finding["title"].startswith("Potential Vulnerability: CVE-2017-7235 affecting Cloudflare")
+    assert cf_finding["is_verified"] is False
+    assert cf_finding["correlation_status"] == "REQUIRES_VERIFICATION"
+    assert cf_finding["verification_status"] == "requires_verification"
+    assert cf_finding["is_version_supported"] is False
+    assert "Verification required" in cf_finding["match_basis"]
+    assert cf_finding["context_score"] >= 80  # Contextual score is high due to CVSS 8.8 + Internet exposure
+
+    # Verify Detail Endpoint preserves verification fields
+    detail_res = client.get(
+        f"/api/investigations/{env['investigation_id']}/findings/{cf_finding['id']}",
+        headers=headers,
+    )
+    assert detail_res.status_code == 200
+    detail = detail_res.json()
+    assert detail["correlation_status"] == "REQUIRES_VERIFICATION"
+    assert detail["verification_status"] == "requires_verification"
+    assert detail["is_version_supported"] is False
+    assert detail["is_verified"] is False
+
+
+def test_20_version_supported_match_semantics(populated_findings_environment):
+    """
+    Verify that a versioned technology with concrete version match:
+    1. Retains correlation_status="POTENTIAL_MATCH" and is_version_supported=True.
+    2. is_verified remains False (passive correlation is not confirmed exploitation).
+    3. Retains "Potential Vulnerability: ..." wording in title.
+    """
+    env = populated_findings_environment
+    headers = get_auth_headers(env["analyst_id"], "analyst_8a", "analyst")
+
+    gen_res = client.post(
+        f"/api/investigations/{env['investigation_id']}/findings/generate?scan_run_id={env['scan_run_id']}",
+        headers=headers,
+    )
+    assert gen_res.status_code == 200
+    data = gen_res.json()
+
+    # nginx finding (which was seeded with version 1.20.0 and POTENTIAL_MATCH)
+    nginx_finding = next((f for f in data["findings"] if "nginx" in f["title"]), None)
+    assert nginx_finding is not None
+
+    assert nginx_finding["title"].startswith("Potential Vulnerability:")
+    assert nginx_finding["is_verified"] is False
+    assert nginx_finding["correlation_status"] == "POTENTIAL_MATCH"
+    assert nginx_finding["is_version_supported"] is True
+    assert nginx_finding["match_basis"] is not None
+
+

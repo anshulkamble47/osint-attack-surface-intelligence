@@ -24,6 +24,8 @@ import {
   FindingListResponse,
   ComparisonSummaryResponse,
   ChangeListResponse,
+  SnapshotSummaryResponse,
+  SnapshotListResponse,
 } from '../types/api';
 
 
@@ -387,6 +389,26 @@ export async function getMonitoringSummary(
     headers: { Authorization: `Bearer ${token}` },
   });
 }
+
+export async function listInvestigationSnapshots(
+  token: string,
+  investigationId: string
+): Promise<SnapshotListResponse> {
+  return request<SnapshotListResponse>(`/investigations/${investigationId}/snapshots`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
+export async function captureInvestigationSnapshot(
+  token: string,
+  investigationId: string
+): Promise<SnapshotSummaryResponse> {
+  return request<SnapshotSummaryResponse>(`/investigations/${investigationId}/snapshots`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+}
+
 
 
 

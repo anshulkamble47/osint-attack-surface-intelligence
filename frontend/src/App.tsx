@@ -25,6 +25,8 @@ import {
   updateInvestigationFindingStatus,
   compareScanRuns,
   listInvestigationScans,
+  listInvestigationSnapshots,
+  captureInvestigationSnapshot,
 } from './services/api';
 import { 
   HealthResponse, 
@@ -49,6 +51,7 @@ import {
   ChangeRecordResponse,
   ComparisonSummaryResponse,
   ScanRunResponse,
+  SnapshotSummaryResponse,
 } from './types/api';
 
 import { Header } from './components/layout/Header';
@@ -140,10 +143,12 @@ export const App: React.FC = () => {
 
   // Stage 9 Monitoring & Change Detection State
   const [runningCompare, setRunningCompare] = useState(false);
+  const [capturingSnapshot, setCapturingSnapshot] = useState(false);
+  const [snapshots, setSnapshots] = useState<SnapshotSummaryResponse[]>([]);
   const [comparisonResult, setComparisonResult] = useState<ComparisonSummaryResponse | null>(null);
   const [changesList, setChangesList] = useState<ChangeRecordResponse[]>([]);
-  const [selectedBaselineScan, setSelectedBaselineScan] = useState<string>('');
-  const [selectedCurrentScan, setSelectedCurrentScan] = useState<string>('');
+  const [selectedBaselineSnapshot, setSelectedBaselineSnapshot] = useState<string>('');
+  const [selectedCurrentSnapshot, setSelectedCurrentSnapshot] = useState<string>('');
   const [changeError, setChangeError] = useState<string | null>(null);
   const [selectedChangeRecord, setSelectedChangeRecord] = useState<ChangeRecordResponse | null>(null);
 
@@ -183,22 +188,20 @@ export const App: React.FC = () => {
     }
   }, [token, loadInvestigations]);
 
-  // Load Graph Data
+  // Load Complete Graph Data
   const handleLoadGraph = useCallback(async () => {
     if (!token || !selectedInv) return;
     setRunningGraph(true);
     setGraphError(null);
     try {
-      const nodeTypes = filterNodeType !== 'ALL' ? [filterNodeType.toLowerCase()] : undefined;
-      const relTypes = filterRelType !== 'ALL' ? [filterRelType.toUpperCase()] : undefined;
-      const res = await getInvestigationGraph(token, selectedInv.id, undefined, nodeTypes, relTypes);
+      const res = await getInvestigationGraph(token, selectedInv.id);
       setGraphData(res);
     } catch (err: any) {
       setGraphError(err.message || 'Failed to load attack surface graph');
     } finally {
       setRunningGraph(false);
     }
-  }, [token, selectedInv, filterNodeType, filterRelType]);
+  }, [token, selectedInv]);
 
   // Load Findings Data
   const handleLoadFindings = useCallback(async () => {
@@ -227,6 +230,17 @@ export const App: React.FC = () => {
     }
   }, [token, selectedInv]);
 
+  // Load Assessment Snapshots Data
+  const handleLoadSnapshots = useCallback(async () => {
+    if (!token || !selectedInv) return;
+    try {
+      const res = await listInvestigationSnapshots(token, selectedInv.id);
+      setSnapshots(res.snapshots);
+    } catch (err: any) {
+      console.error('Failed to load assessment snapshots:', err);
+    }
+  }, [token, selectedInv]);
+
   // Sync data whenever selected investigation changes
   useEffect(() => {
     if (token && selectedInv) {
@@ -242,8 +256,9 @@ export const App: React.FC = () => {
       handleLoadGraph();
       handleLoadFindings();
       handleLoadScans();
+      handleLoadSnapshots();
     }
-  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph, handleLoadFindings, handleLoadScans]);
+  }, [token, selectedInv, ctResult, resolveResult, ipEnrichResult, fingerprintResult, vulnResult, handleLoadGraph, handleLoadFindings, handleLoadScans, handleLoadSnapshots]);
 
   // Handle Login
   const handleLogin = async (username: string, pass: string) => {
@@ -422,11 +437,18 @@ export const App: React.FC = () => {
       setServices(updatedServices);
       setIPAddresses(updatedIPs);
       handleLoadScans();
+
+      const hasWarnings = (res.warnings_count || 0) > 0 || res.status === 'completed_with_warnings';
+      const warningCount = res.warnings_count || ((res.timeouts_count || 0) + (res.no_nameservers_count || 0));
+      const successMsg = hasWarnings
+        ? `DNS resolution completed with warnings: ${res.candidates_processed} hostnames processed (${res.resolved} resolving, ${res.not_resolved} unresolving, ${warningCount} warnings/timeouts) • ${res.dns_records_discovered} DNS records stored • ${res.services_discovered} exposed services.`
+        : `DNS resolution completed: ${res.candidates_processed} hostnames probed, ${res.resolved} resolving, ${res.dns_records_discovered} DNS records stored, ${res.services_discovered} exposed services.`;
+
       setActionStatus({
         type: 'success',
         stageNumber: 2,
-        stageName: '2. Resolve DNS',
-        message: `DNS & Reachability probe completed: ${res.candidates_processed} hostnames probed, ${res.resolved} resolving, ${res.dns_records_discovered} DNS records found, ${res.services_discovered} services exposed.`,
+        stageName: hasWarnings ? '2. Resolve DNS (With Warnings)' : '2. Resolve DNS',
+        message: successMsg,
         detail: res.note,
         timestamp: new Date(),
       });
@@ -637,8 +659,30 @@ export const App: React.FC = () => {
     }
   };
 
-  // Handle Compare Scans (Stage 9)
-  const handleCompareScans = async () => {
+  // Handle Capture Assessment Snapshot (Stage 9)
+  const handleCaptureSnapshot = async () => {
+    if (!token || !selectedInv) return;
+    setCapturingSnapshot(true);
+    setChangeError(null);
+    try {
+      await captureInvestigationSnapshot(token, selectedInv.id);
+      await handleLoadSnapshots();
+      await handleLoadScans();
+      const res = await compareScanRuns(token, selectedInv.id);
+      setComparisonResult(res);
+      setChangesList(res.changes);
+      if (res.changes.length > 0) {
+        setSelectedChangeRecord(res.changes[0]);
+      }
+    } catch (err: any) {
+      setChangeError(err.message || 'Failed to capture complete assessment snapshot');
+    } finally {
+      setCapturingSnapshot(false);
+    }
+  };
+
+  // Handle Compare Snapshots (Stage 9)
+  const handleCompareSnapshots = async () => {
     if (!token || !selectedInv) return;
     setRunningCompare(true);
     setChangeError(null);
@@ -646,8 +690,8 @@ export const App: React.FC = () => {
       const res = await compareScanRuns(
         token,
         selectedInv.id,
-        selectedBaselineScan || undefined,
-        selectedCurrentScan || undefined
+        selectedBaselineSnapshot || undefined,
+        selectedCurrentSnapshot || undefined
       );
       setComparisonResult(res);
       setChangesList(res.changes);
@@ -655,7 +699,7 @@ export const App: React.FC = () => {
         setSelectedChangeRecord(res.changes[0]);
       }
     } catch (err: any) {
-      setChangeError(err.message || 'Failed to compare scan runs');
+      setChangeError(err.message || 'Failed to compare assessment snapshots');
     } finally {
       setRunningCompare(false);
     }
@@ -688,39 +732,39 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-layout">
-      {/* Sidebar Navigation */}
-      <Sidebar
-        activeTab={activeTab}
-        onSelectTab={setActiveTab}
-        investigations={investigations}
+      {/* Global Top Header */}
+      <Header
         selectedInv={selectedInv}
-        onSelectInv={inv => {
-          setSelectedInv(inv);
-          setCTResult(null);
-          setResolveResult(null);
-          setIPEnrichResult(null);
-          setFingerprintResult(null);
-          setVulnResult(null);
-          setGraphData(null);
-          setFindingsList([]);
-          setSelectedFinding(null);
-          setChangesList([]);
-          setComparisonResult(null);
-        }}
-        onOpenNewInvModal={() => setIsNewInvModalOpen(true)}
-        counts={counts}
+        currentUser={currentUser}
+        healthData={healthData}
+        onLogout={handleLogout}
       />
 
-      {/* Main Content Area */}
-      <div className="main-content">
-        <Header
+      {/* Main App Body with Sidebar and Content Viewport */}
+      <div className="main-body">
+        <Sidebar
+          activeTab={activeTab}
+          onSelectTab={setActiveTab}
+          investigations={investigations}
           selectedInv={selectedInv}
-          currentUser={currentUser}
-          healthData={healthData}
-          onLogout={handleLogout}
+          onSelectInv={inv => {
+            setSelectedInv(inv);
+            setCTResult(null);
+            setResolveResult(null);
+            setIPEnrichResult(null);
+            setFingerprintResult(null);
+            setVulnResult(null);
+            setGraphData(null);
+            setFindingsList([]);
+            setSelectedFinding(null);
+            setChangesList([]);
+            setComparisonResult(null);
+          }}
+          onOpenNewInvModal={() => setIsNewInvModalOpen(true)}
+          counts={counts}
         />
 
-        <div className="content-container">
+        <main className="content-viewport">
           {selectedInv ? (
             <>
               {activeTab === 'overview' && (
@@ -835,13 +879,16 @@ export const App: React.FC = () => {
                 <MonitoringChangesView
                   comparisonResult={comparisonResult}
                   changes={changesList}
-                  onCompareScans={handleCompareScans}
+                  snapshots={snapshots}
+                  onCompareSnapshots={handleCompareSnapshots}
+                  onCaptureSnapshot={handleCaptureSnapshot}
                   loading={runningCompare}
+                  capturingSnapshot={capturingSnapshot}
                   error={changeError}
-                  baselineScanId={selectedBaselineScan}
-                  onChangeBaselineScanId={setSelectedBaselineScan}
-                  currentScanId={selectedCurrentScan}
-                  onChangeCurrentScanId={setSelectedCurrentScan}
+                  baselineSnapshotId={selectedBaselineSnapshot}
+                  onChangeBaselineSnapshotId={setSelectedBaselineSnapshot}
+                  currentSnapshotId={selectedCurrentSnapshot}
+                  onChangeCurrentSnapshotId={setSelectedCurrentSnapshot}
                   selectedChange={selectedChangeRecord}
                   onSelectChange={setSelectedChangeRecord}
                 />
@@ -872,7 +919,7 @@ export const App: React.FC = () => {
               No active investigation selected. Create a new assessment using the sidebar button to begin.
             </div>
           )}
-        </div>
+        </main>
       </div>
 
       {/* New Investigation Modal */}

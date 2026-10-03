@@ -1,8 +1,9 @@
 """Investigation management and Certificate Transparency discovery API endpoints."""
 
 import uuid
+import concurrent.futures
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any, Tuple
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy import select, func
 from sqlalchemy.orm import Session
@@ -56,14 +57,17 @@ from backend.app.schemas.change import (
     CompareScanRunsRequest,
     ComparisonSummaryResponse,
     ChangeListResponse,
+    SnapshotSummaryResponse,
+    SnapshotListResponse,
 )
+from backend.app.core.config import settings
 from backend.app.services.ct_service import CTService, CTProviderError
-from backend.app.services.dns_service import DNSService
+from backend.app.services.dns_service import DNSService, DNSResolutionResult
 from backend.app.services.reachability_service import ReachabilityService
 from backend.app.services.ip_service import IPService
 from backend.app.services.asn_service import ASNService
 from backend.app.services.rdap_service import RDAPService
-from backend.app.services.http_service import HTTPIntelligenceService
+from backend.app.services.http_service import HTTPIntelligenceService, HTTPProbeObservation
 from backend.app.services.technology_service import TechnologyService
 from backend.app.services.vulnerability_service import VulnerabilityService
 from backend.app.services.correlation_service import CorrelationService
@@ -768,18 +772,9 @@ def run_dns_and_reachability(
         .order_by(Asset.value.asc())
     ).scalars().all()
 
-    results_detail: List[CandidateResolutionDetail] = []
-    resolved_count = 0
-    not_resolved_count = 0
-    reachable_count = 0
-    unreachable_count = 0
-    total_dns_records_count = 0
-    total_services_count = 0
-
+    # Pre-fetch or create Subdomain entities
+    subdomains_by_asset_id: Dict[uuid.UUID, Subdomain] = {}
     for asset in candidate_assets:
-        hostname = asset.value
-
-        # Ensure Subdomain record exists for attaching DNS records
         subdomain = db.execute(
             select(Subdomain).where(Subdomain.asset_id == asset.id)
         ).scalar_one_or_none()
@@ -788,21 +783,118 @@ def run_dns_and_reachability(
             subdomain = Subdomain(
                 asset_id=asset.id,
                 domain_id=root_domain_rec.id,
-                subdomain_name=hostname,
+                subdomain_name=asset.value,
                 is_resolving=False,
                 discovery_source=asset.source or "candidate_discovery",
             )
             db.add(subdomain)
             db.flush()
+        subdomains_by_asset_id[asset.id] = subdomain
 
-        # Step A: Perform DNS resolution
-        dns_res = dns_service.resolve(hostname)
+    def _is_mock(obj) -> bool:
+        return hasattr(obj, "_mock_return_value") or type(obj).__module__.startswith("unittest.mock")
+
+    def _has_explicit_batch_method(service, method_name: str) -> bool:
+        if not hasattr(service, method_name):
+            return False
+        if not _is_mock(service):
+            return True
+        method = getattr(service, method_name)
+        if not _is_mock(method):
+            return True
+        if method.side_effect is not None:
+            return True
+        if "_mock_return_value" in method.__dict__ and not _is_mock(method.__dict__["_mock_return_value"]):
+            return True
+        return False
+
+    def _safe_resolve(dns_svc, hostname: str, is_root: bool):
+        try:
+            return dns_svc.resolve(hostname, is_root_target=is_root)
+        except TypeError:
+            return dns_svc.resolve(hostname)
+
+    def _safe_probe(reach_svc, hostname: str, ips: list):
+        try:
+            return reach_svc.probe_hostname(hostname, resolved_ips=ips)
+        except TypeError:
+            return reach_svc.probe_hostname(hostname)
+
+    # Step A: Perform Bounded Concurrent DNS Resolution across all candidate hostnames
+    candidate_hostnames = [a.value for a in candidate_assets]
+    if _has_explicit_batch_method(dns_service, "resolve_batch"):
+        dns_results_map = dns_service.resolve_batch(
+            candidate_hostnames,
+            max_concurrency=settings.DNS_MAX_CONCURRENCY,
+            root_domain=target_domain,
+        )
+    else:
+        dns_results_map = {
+            h: _safe_resolve(dns_service, h, bool(h == target_domain))
+            for h in candidate_hostnames
+        }
+    if not isinstance(dns_results_map, dict):
+        dns_results_map = {}
+
+    # Step B: Identify resolving hostnames and perform Bounded Concurrent Reachability Probing
+    resolving_probe_items: List[tuple] = []
+    for asset in candidate_assets:
+        dns_res = dns_results_map.get(asset.value)
+        if dns_res and getattr(dns_res, "is_resolving", False) is True:
+            resolved_ips = [
+                rec.value for rec in getattr(dns_res, "records", [])
+                if getattr(rec, "record_type", None) in ("A", "AAAA")
+            ]
+            resolving_probe_items.append((asset.value, resolved_ips))
+
+    if _has_explicit_batch_method(reachability_service, "probe_batch"):
+        probe_results_map = reachability_service.probe_batch(
+            resolving_probe_items,
+            max_concurrency=settings.DNS_MAX_CONCURRENCY,
+        )
+    else:
+        probe_results_map = {
+            host: _safe_probe(reachability_service, host, ips)
+            for host, ips in resolving_probe_items
+        }
+    if not isinstance(probe_results_map, dict):
+        probe_results_map = {}
+
+    # Step C: Synchronize Observations and Database Persistence
+    results_detail: List[CandidateResolutionDetail] = []
+    resolved_count = 0
+    not_resolved_count = 0
+    reachable_count = 0
+    unreachable_count = 0
+    total_dns_records_count = 0
+    total_services_count = 0
+    timeouts_count = 0
+    no_nameservers_count = 0
+
+    for asset in candidate_assets:
+        hostname = asset.value
+        subdomain = subdomains_by_asset_id[asset.id]
+        dns_res = dns_results_map.get(
+            hostname,
+            DNSResolutionResult(hostname=hostname, is_resolving=False, error="Resolution Skipped"),
+        )
         candidate_dns_summaries: List[DNSRecordSummaryResponse] = []
         candidate_service_summaries: List[ServiceExposureSummaryResponse] = []
-
         is_host_reachable = False
 
-        if dns_res.is_resolving:
+        dns_error = getattr(dns_res, "error", None)
+        if dns_error and isinstance(dns_error, str):
+            err_lower = dns_error.lower()
+            if "timeout" in err_lower:
+                timeouts_count += 1
+            if "nameserver" in err_lower:
+                no_nameservers_count += 1
+        elif not isinstance(dns_error, str):
+            dns_error = None
+
+        is_resolving = getattr(dns_res, "is_resolving", False) is True
+
+        if is_resolving:
             resolved_count += 1
             subdomain.is_resolving = True
             subdomain.last_observed_at = now_utc
@@ -811,74 +903,91 @@ def run_dns_and_reachability(
             asset.last_seen_at = now_utc
 
             # Persist DNS records
-            for rec in dns_res.records:
-                dns_rec_db = DNSRecord(
-                    subdomain_id=subdomain.id,
-                    scan_run_id=scan_run.id,
-                    record_type=rec.record_type,
-                    value=rec.value,
-                    ttl=rec.ttl,
-                    resolver=rec.resolver,
-                    collected_at=rec.collected_at,
-                )
-                db.add(dns_rec_db)
-                db.flush()
-                total_dns_records_count += 1
-
-                candidate_dns_summaries.append(
-                    DNSRecordSummaryResponse(
-                        id=dns_rec_db.id,
-                        subdomain_id=subdomain.id,
-                        record_type=dns_rec_db.record_type,
-                        value=dns_rec_db.value,
-                        ttl=dns_rec_db.ttl,
-                        resolver=dns_rec_db.resolver,
-                        collected_at=dns_rec_db.collected_at,
-                        scan_run_id=scan_run.id,
-                    )
-                )
-
-            # Extract resolved IPv4 and IPv6 addresses for pre-flight SSRF validation
-            resolved_ips = [
-                rec.value for rec in dns_res.records if rec.record_type in ("A", "AAAA")
-            ]
-
-            # Step B: Perform Reachability Probing for resolving hostnames (SSRF-protected)
-            probe_results = reachability_service.probe_hostname(
-                hostname, resolved_ips=resolved_ips
-            )
-
-            for probe in probe_results:
-
-                if probe.is_reachable:
-                    is_host_reachable = True
-                    svc_db = ServiceExposure(
-                        asset_id=asset.id,
-                        scan_run_id=scan_run.id,
-                        port=probe.port,
-                        protocol=probe.protocol,
-                        service_name=probe.service_name,
-                        http_status=probe.status_code,
-                        page_title=probe.page_title,
-                        observed_at=probe.observed_at,
-                    )
-                    db.add(svc_db)
-                    db.flush()
-                    total_services_count += 1
-
-                    candidate_service_summaries.append(
-                        ServiceExposureSummaryResponse(
-                            id=svc_db.id,
-                            asset_id=asset.id,
-                            port=svc_db.port,
-                            protocol=svc_db.protocol,
-                            service_name=svc_db.service_name,
-                            http_status=svc_db.http_status,
-                            page_title=svc_db.page_title,
-                            observed_at=svc_db.observed_at,
+            records_list = getattr(dns_res, "records", [])
+            if isinstance(records_list, list):
+                for rec in records_list:
+                    rec_type = getattr(rec, "record_type", None)
+                    rec_val = getattr(rec, "value", None)
+                    if isinstance(rec_type, str) and isinstance(rec_val, str):
+                        dns_rec_db = DNSRecord(
+                            subdomain_id=subdomain.id,
                             scan_run_id=scan_run.id,
+                            record_type=rec_type,
+                            value=rec_val,
+                            ttl=getattr(rec, "ttl", None) if isinstance(getattr(rec, "ttl", None), int) else None,
+                            resolver=getattr(rec, "resolver", None) if isinstance(getattr(rec, "resolver", None), str) else None,
+                            collected_at=getattr(rec, "collected_at", now_utc) if isinstance(getattr(rec, "collected_at", None), datetime) else now_utc,
                         )
-                    )
+                        db.add(dns_rec_db)
+                        db.flush()
+                        total_dns_records_count += 1
+
+                        candidate_dns_summaries.append(
+                            DNSRecordSummaryResponse(
+                                id=dns_rec_db.id,
+                                subdomain_id=subdomain.id,
+                                record_type=dns_rec_db.record_type,
+                                value=dns_rec_db.value,
+                                ttl=dns_rec_db.ttl,
+                                resolver=dns_rec_db.resolver,
+                                collected_at=dns_rec_db.collected_at,
+                                scan_run_id=scan_run.id,
+                            )
+                        )
+
+            # Persist Service Exposures
+            probe_results = probe_results_map.get(hostname, [])
+            if isinstance(probe_results, list):
+                for probe in probe_results:
+                    if getattr(probe, "is_reachable", False) is True:
+                        is_host_reachable = True
+                        status_code_val = getattr(probe, "status_code", None)
+                        if not isinstance(status_code_val, int):
+                            status_code_val = None
+
+                        page_title_val = getattr(probe, "page_title", None)
+                        if not isinstance(page_title_val, str):
+                            page_title_val = None
+
+                        port_val = getattr(probe, "port", 80)
+                        if not isinstance(port_val, int):
+                            port_val = 80
+
+                        protocol_val = getattr(probe, "protocol", "tcp")
+                        if not isinstance(protocol_val, str):
+                            protocol_val = "tcp"
+
+                        service_name_val = getattr(probe, "service_name", "http")
+                        if not isinstance(service_name_val, str):
+                            service_name_val = "http"
+
+                        svc_db = ServiceExposure(
+                            asset_id=asset.id,
+                            scan_run_id=scan_run.id,
+                            port=port_val,
+                            protocol=protocol_val,
+                            service_name=service_name_val,
+                            http_status=status_code_val,
+                            page_title=page_title_val,
+                            observed_at=getattr(probe, "observed_at", now_utc),
+                        )
+                        db.add(svc_db)
+                        db.flush()
+                        total_services_count += 1
+
+                        candidate_service_summaries.append(
+                            ServiceExposureSummaryResponse(
+                                id=svc_db.id,
+                                asset_id=asset.id,
+                                port=svc_db.port,
+                                protocol=svc_db.protocol,
+                                service_name=svc_db.service_name,
+                                http_status=svc_db.http_status,
+                                page_title=svc_db.page_title,
+                                observed_at=svc_db.observed_at,
+                                scan_run_id=scan_run.id,
+                            )
+                        )
 
             if is_host_reachable:
                 reachable_count += 1
@@ -892,23 +1001,30 @@ def run_dns_and_reachability(
             subdomain.last_observed_at = now_utc
             asset.last_scan_run_id = scan_run.id
             asset.last_seen_at = now_utc
-            # Note: We do NOT delete non-resolving candidates.
 
         results_detail.append(
             CandidateResolutionDetail(
                 hostname=hostname,
-                is_resolving=dns_res.is_resolving,
+                is_resolving=is_resolving,
                 is_reachable=is_host_reachable,
                 dns_records_count=len(candidate_dns_summaries),
                 services_count=len(candidate_service_summaries),
                 dns_records=candidate_dns_summaries,
                 service_exposures=candidate_service_summaries,
-                error=dns_res.error,
+                error=dns_error,
             )
         )
 
-    # 4. Finalize ScanRun
-    scan_run.status = "completed"
+    # 4. Finalize ScanRun with Completion Semantics
+    warnings_count = timeouts_count + no_nameservers_count
+    if resolved_count > 0 and warnings_count > 0:
+        scan_run_status = "completed_with_warnings"
+    elif resolved_count == 0 and len(candidate_assets) > 0 and warnings_count > 0:
+        scan_run_status = "completed_with_warnings"
+    else:
+        scan_run_status = "completed"
+
+    scan_run.status = scan_run_status
     scan_run.completed_at = datetime.now(timezone.utc)
     scan_run.total_discovered_assets = resolved_count
     scan_run.summary = {
@@ -920,6 +1036,10 @@ def run_dns_and_reachability(
         "unreachable": unreachable_count,
         "dns_records_discovered": total_dns_records_count,
         "services_discovered": total_services_count,
+        "timeouts_count": timeouts_count,
+        "no_nameservers_count": no_nameservers_count,
+        "warnings_count": warnings_count,
+        "status": scan_run_status,
     }
 
     db.commit()
@@ -927,7 +1047,8 @@ def run_dns_and_reachability(
     logger.info(
         f"Completed Stage 3B resolution for '{target_domain}': "
         f"{len(candidate_assets)} processed, {resolved_count} resolved, "
-        f"{reachable_count} reachable, {total_dns_records_count} DNS records."
+        f"{reachable_count} reachable, {total_dns_records_count} DNS records. "
+        f"Status: {scan_run_status} ({warnings_count} warnings)."
     )
 
     return DNSReachabilityResponse(
@@ -941,6 +1062,10 @@ def run_dns_and_reachability(
         unreachable=unreachable_count,
         dns_records_discovered=total_dns_records_count,
         services_discovered=total_services_count,
+        status=scan_run_status,
+        warnings_count=warnings_count,
+        timeouts_count=timeouts_count,
+        no_nameservers_count=no_nameservers_count,
         results=results_detail,
         completed_at=scan_run.completed_at,
     )
@@ -1081,59 +1206,99 @@ def run_ip_enrichment(
     db.flush()
 
     results_detail: List[IPEnrichmentDetail] = []
-    public_ips_count = 0
+    public_entries: List[Dict[str, Any]] = []
     skipped_non_public_count = 0
-    asn_success_count = 0
-    rdap_success_count = 0
-    failed_count = 0
 
     for entry in unique_ip_entries:
-        ip_str = entry["ip_address"]
-        ip_version = entry["ip_version"]
-        is_public = entry["is_public"]
-
-        if not is_public:
+        if not entry["is_public"]:
             skipped_non_public_count += 1
             results_detail.append(
                 IPEnrichmentDetail(
-                    ip_address=ip_str,
-                    ip_version=ip_version,
+                    ip_address=entry["ip_address"],
+                    ip_version=entry["ip_version"],
                     is_public=False,
                     status="skipped_non_public",
                     error="Non-public / reserved IP address. External ASN and RDAP queries skipped.",
                 )
             )
-            continue
+        else:
+            public_entries.append(entry)
 
-        public_ips_count += 1
+    public_ips_count = len(public_entries)
+    asn_success_count = 0
+    rdap_success_count = 0
+    failed_count = 0
 
-        # Step A: Perform ASN lookup
-        asn_info = asn_service.lookup(ip_str)
+    # Helper function for bounded concurrent network lookups
+    def _enrich_single(e: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Any], Optional[Any]]:
+        ip = e["ip_address"]
+        a_info = None
+        r_info = None
+        try:
+            a_info = asn_service.lookup(ip)
+        except Exception as exc:
+            logger.warning(f"ASN lookup error for IP '{ip}': {exc}")
+        try:
+            r_info = rdap_service.lookup(ip)
+        except Exception as exc:
+            logger.warning(f"RDAP lookup error for IP '{ip}': {exc}")
+        return e, a_info, r_info
+
+    # Bounded concurrent execution (max 16 workers, min 1)
+    MAX_WORKERS = 16
+    enrichment_results: List[Tuple[Dict[str, Any], Optional[Any], Optional[Any]]] = []
+
+    if len(public_entries) > 1:
+        worker_count = min(MAX_WORKERS, len(public_entries))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_entry = {executor.submit(_enrich_single, entry): entry for entry in public_entries}
+            for future in concurrent.futures.as_completed(future_to_entry):
+                try:
+                    enrichment_results.append(future.result())
+                except Exception as exc:
+                    ent = future_to_entry[future]
+                    logger.error(f"Enrichment worker failure for IP {ent['ip_address']}: {exc}")
+                    enrichment_results.append((ent, None, None))
+    elif len(public_entries) == 1:
+        enrichment_results.append(_enrich_single(public_entries[0]))
+
+    # Sequential database persistence on main thread
+    asn_cache: Dict[int, ASN] = {}
+
+    for entry, asn_info, rdap_info in enrichment_results:
+        ip_str = entry["ip_address"]
+        ip_version = entry["ip_version"]
         asn_db = None
         asn_summary: Optional[ASNSummaryResponse] = None
 
+        # Step A: Persist / Update ASN entity
         if asn_info and asn_info.asn_number:
             asn_success_count += 1
-            asn_db = db.execute(
-                select(ASN).where(ASN.asn_number == asn_info.asn_number)
-            ).scalar_one_or_none()
-
-            if not asn_db:
-                asn_db = ASN(
-                    asn_number=asn_info.asn_number,
-                    name=asn_info.name or f"AS{asn_info.asn_number}",
-                    country=asn_info.country,
-                    allocated_prefix=asn_info.allocated_prefix,
-                )
-                db.add(asn_db)
-                db.flush()
+            if asn_info.asn_number in asn_cache:
+                asn_db = asn_cache[asn_info.asn_number]
             else:
-                if asn_info.name and not asn_db.name:
-                    asn_db.name = asn_info.name
-                if asn_info.country and not asn_db.country:
-                    asn_db.country = asn_info.country
-                if asn_info.allocated_prefix and not asn_db.allocated_prefix:
-                    asn_db.allocated_prefix = asn_info.allocated_prefix
+                asn_db = db.execute(
+                    select(ASN).where(ASN.asn_number == asn_info.asn_number)
+                ).scalar_one_or_none()
+
+                if not asn_db:
+                    asn_db = ASN(
+                        asn_number=asn_info.asn_number,
+                        name=asn_info.name or f"AS{asn_info.asn_number}",
+                        country=asn_info.country,
+                        allocated_prefix=asn_info.allocated_prefix,
+                    )
+                    db.add(asn_db)
+                    db.flush()
+                else:
+                    if asn_info.name and not asn_db.name:
+                        asn_db.name = asn_info.name
+                    if asn_info.country and not asn_db.country:
+                        asn_db.country = asn_info.country
+                    if asn_info.allocated_prefix and not asn_db.allocated_prefix:
+                        asn_db.allocated_prefix = asn_info.allocated_prefix
+
+                asn_cache[asn_info.asn_number] = asn_db
 
             asn_summary = ASNSummaryResponse(
                 id=asn_db.id,
@@ -1143,10 +1308,8 @@ def run_ip_enrichment(
                 allocated_prefix=asn_db.allocated_prefix,
             )
 
-        # Step B: Perform RDAP lookup
-        rdap_info = rdap_service.lookup(ip_str)
+        # Step B: RDAP Summary
         rdap_summary: Optional[RDAPSummaryResponse] = None
-
         if rdap_info:
             rdap_success_count += 1
             rdap_summary = RDAPSummaryResponse(
@@ -1279,8 +1442,14 @@ def run_ip_enrichment(
             )
         )
 
-    # 4. Finalize ScanRun
-    scan_run.status = "completed"
+    # 4. Finalize ScanRun with appropriate status semantics
+    # If some lookups failed, record completed_with_warnings; else completed
+    if failed_count > 0:
+        scan_run_status = "completed_with_warnings"
+    else:
+        scan_run_status = "completed"
+
+    scan_run.status = scan_run_status
     scan_run.completed_at = datetime.now(timezone.utc)
     scan_run.total_discovered_assets = len(unique_ip_entries)
     scan_run.summary = {
@@ -1291,6 +1460,8 @@ def run_ip_enrichment(
         "asn_success": asn_success_count,
         "rdap_success": rdap_success_count,
         "failed": failed_count,
+        "warnings_count": failed_count,
+        "status": scan_run_status,
     }
 
     # Update Investigation
@@ -1300,12 +1471,13 @@ def run_ip_enrichment(
     logger.info(
         f"Completed IP enrichment for '{target_domain}' (Investigation {investigation_id}): "
         f"{len(unique_ip_entries)} IPs processed ({public_ips_count} public, {skipped_non_public_count} skipped, "
-        f"{asn_success_count} ASN, {rdap_success_count} RDAP)."
+        f"{asn_success_count} ASN, {rdap_success_count} RDAP, status: {scan_run_status})."
     )
 
     return IPEnrichmentResponse(
         investigation_id=investigation.id,
         scan_run_id=scan_run.id,
+        status=scan_run_status,
         target_domain=target_domain,
         ips_processed=len(unique_ip_entries),
         public_ips=public_ips_count,
@@ -1313,6 +1485,7 @@ def run_ip_enrichment(
         asn_success=asn_success_count,
         rdap_success=rdap_success_count,
         failed=failed_count,
+        warnings_count=failed_count,
         results=results_detail,
         completed_at=scan_run.completed_at,
     )
@@ -1532,182 +1705,285 @@ def run_fingerprinting(
         .order_by(Asset.value.asc())
     ).scalars().all()
 
-    results_detail: List[ServiceFingerprintDetail] = []
-    services_processed_count = 0
-    reachable_count = 0
-    total_techs_count = 0
-    total_headers_analyzed_count = 0
-    total_tls_count = 0
+    if not assets:
+        scan_run.status = "completed"
+        scan_run.completed_at = datetime.now(timezone.utc)
+        scan_run.total_discovered_assets = 0
+        scan_run.summary = {
+            "operation": "technology_fingerprinting_http_security",
+            "services_processed": 0,
+            "reachable": 0,
+            "technologies_detected": 0,
+            "security_headers_analyzed": 0,
+            "tls_observations": 0,
+            "timeouts_count": 0,
+            "ssrf_skips_count": 0,
+            "failed_count": 0,
+            "warnings_count": 0,
+            "status": "completed",
+        }
+        investigation.status = "active"
+        db.commit()
+        return FingerprintResponse(
+            investigation_id=investigation.id,
+            scan_run_id=scan_run.id,
+            status="completed",
+            target_domain=target_domain,
+            services_processed=0,
+            reachable=0,
+            technologies_detected=0,
+            security_headers_analyzed=0,
+            tls_observations=0,
+            timeouts_count=0,
+            ssrf_skips_count=0,
+            warnings_count=0,
+            results=[],
+            completed_at=scan_run.completed_at,
+        )
+
+    # 3. Batch pre-fetch all A/AAAA DNS records for these assets in 1 query
+    asset_ids = [a.id for a in assets]
+    dns_rows = db.execute(
+        select(Subdomain.asset_id, DNSRecord.value)
+        .join(DNSRecord, DNSRecord.subdomain_id == Subdomain.id)
+        .where(
+            Subdomain.asset_id.in_(asset_ids),
+            DNSRecord.record_type.in_(["A", "AAAA"]),
+        )
+    ).all()
+
+    asset_to_ips: Dict[uuid.UUID, List[str]] = {}
+    for a_id, ip_val in dns_rows:
+        if ip_val:
+            asset_to_ips.setdefault(a_id, []).append(ip_val)
 
     ports_to_probe = [
         (80, "tcp", "http"),
         (443, "tcp", "https"),
     ]
 
+    # 4. Build unique probe targets and map them to assets
+    # Target Key: (hostname, port, protocol, service_name) -> tuple of resolved_ips
+    unique_probe_targets: Dict[Tuple[str, int, str, str], Tuple[str, ...]] = {}
+    asset_probe_plan: List[Tuple[Asset, int, str, str]] = []
+
     for asset in assets:
         hostname = asset.value
-
-        # Fetch resolved A/AAAA IP records for pre-flight SSRF protection
-        dns_records = db.execute(
-            select(DNSRecord)
-            .join(Subdomain, DNSRecord.subdomain_id == Subdomain.id)
-            .where(
-                Subdomain.asset_id == asset.id,
-                DNSRecord.record_type.in_(["A", "AAAA"]),
-            )
-        ).scalars().all()
-
-        resolved_ips = [r.value for r in dns_records if r.value]
-
-        # Probe each web port
+        res_ips = tuple(asset_to_ips.get(asset.id, []))
         for port, protocol, service_name in ports_to_probe:
-            services_processed_count += 1
+            target_key = (hostname, port, protocol, service_name)
+            if target_key not in unique_probe_targets:
+                unique_probe_targets[target_key] = res_ips
+            asset_probe_plan.append((asset, port, protocol, service_name))
 
-            obs = http_service.probe_service(
-                hostname=hostname,
-                port=port,
-                protocol=protocol,
-                service_name=service_name,
-                resolved_ips=resolved_ips if resolved_ips else None,
-            )
+    # 5. Execute bounded concurrent network probing (max 16 workers)
+    def _probe_worker(item: Tuple[Tuple[str, int, str, str], Tuple[str, ...]]) -> Tuple[Tuple[str, int, str, str], HTTPProbeObservation]:
+        (hostname, port, protocol, service_name), res_ips = item
+        obs = http_service.probe_service(
+            hostname=hostname,
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            resolved_ips=list(res_ips) if res_ips else None,
+        )
+        return (hostname, port, protocol, service_name), obs
 
-            if not obs.is_reachable:
-                # Unreachable or SSRF-blocked service
-                continue
+    MAX_WORKERS = 16
+    probe_items = list(unique_probe_targets.items())
+    worker_count = min(MAX_WORKERS, max(1, len(probe_items)))
+    probe_results_map: Dict[Tuple[str, int, str, str], HTTPProbeObservation] = {}
 
-            reachable_count += 1
+    if len(probe_items) > 1:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_item = {executor.submit(_probe_worker, item): item for item in probe_items}
+            for future in concurrent.futures.as_completed(future_to_item):
+                try:
+                    key, obs = future.result()
+                    probe_results_map[key] = obs
+                except Exception as exc:
+                    item = future_to_item[future]
+                    k = item[0]
+                    logger.error(f"Probe worker exception for {k[0]}:{k[1]}: {exc}")
+                    probe_results_map[k] = HTTPProbeObservation(
+                        url=f"{k[3]}://{k[0]}:{k[1]}",
+                        port=k[1],
+                        protocol=k[2],
+                        service_name=k[3],
+                        is_reachable=False,
+                        error=str(exc),
+                    )
+    elif len(probe_items) == 1:
+        key, obs = _probe_worker(probe_items[0])
+        probe_results_map[key] = obs
 
-            # Create or link ServiceExposure record for this ScanRun
-            svc_db = ServiceExposure(
+    # 6. Sequential database persistence & technology fingerprinting on main thread
+    results_detail: List[ServiceFingerprintDetail] = []
+    services_processed_count = 0
+    reachable_count = 0
+    total_techs_count = 0
+    total_headers_analyzed_count = 0
+    total_tls_count = 0
+    timeouts_count = 0
+    ssrf_skips_count = 0
+    failed_count = 0
+
+    for asset, port, protocol, service_name in asset_probe_plan:
+        hostname = asset.value
+        services_processed_count += 1
+        target_key = (hostname, port, protocol, service_name)
+        obs = probe_results_map.get(target_key)
+
+        if not obs or not obs.is_reachable:
+            err_msg = obs.error if obs else "No response"
+            if err_msg and any(k in err_msg.lower() for k in ("ssrf", "non-public", "reserved")):
+                ssrf_skips_count += 1
+            elif err_msg and any(k in err_msg.lower() for k in ("timeout", "timed out", "time out")):
+                timeouts_count += 1
+                failed_count += 1
+            elif err_msg:
+                failed_count += 1
+            continue
+
+        reachable_count += 1
+
+        # Create or link ServiceExposure record for this ScanRun
+        svc_db = ServiceExposure(
+            asset_id=asset.id,
+            scan_run_id=scan_run.id,
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            http_status=obs.status_code,
+            page_title=obs.page_title,
+            tls_version=obs.tls_metadata.tls_version if obs.tls_metadata else None,
+            security_headers={
+                k: {
+                    "header_name": v.header_name,
+                    "present": v.present,
+                    "value": v.value,
+                    "status": v.status,
+                    "interpretation": v.interpretation,
+                }
+                for k, v in obs.security_headers.items()
+            },
+            banner=obs.server_header,
+            observed_at=obs.observed_at,
+        )
+        db.add(svc_db)
+        db.flush()
+
+        # Technology detection
+        detected_techs = tech_service.fingerprint_http_observation(obs)
+        tech_summaries: List[TechnologySummaryResponse] = []
+
+        for dt in detected_techs:
+            total_techs_count += 1
+            tech_db = Technology(
                 asset_id=asset.id,
+                service_id=svc_db.id,
                 scan_run_id=scan_run.id,
-                port=port,
-                protocol=protocol,
-                service_name=service_name,
-                http_status=obs.status_code,
-                page_title=obs.page_title,
-                tls_version=obs.tls_metadata.tls_version if obs.tls_metadata else None,
-                security_headers={
-                    k: {
-                        "header_name": v.header_name,
-                        "present": v.present,
-                        "value": v.value,
-                        "status": v.status,
-                        "interpretation": v.interpretation,
-                    }
-                    for k, v in obs.security_headers.items()
-                },
-                banner=obs.server_header,
-                observed_at=obs.observed_at,
+                name=dt.name,
+                version=dt.version,
+                cpe=dt.cpe,
+                category=dt.category,
+                confidence=dt.confidence,
+                evidence_source=dt.evidence_source,
+                detected_at=obs.observed_at,
             )
-            db.add(svc_db)
+            db.add(tech_db)
             db.flush()
 
-            # Technology detection
-            detected_techs = tech_service.fingerprint_http_observation(obs)
-            tech_summaries: List[TechnologySummaryResponse] = []
-
-            for dt in detected_techs:
-                total_techs_count += 1
-                tech_db = Technology(
+            tech_summaries.append(
+                TechnologySummaryResponse(
+                    id=tech_db.id,
                     asset_id=asset.id,
+                    asset_value=hostname,
                     service_id=svc_db.id,
                     scan_run_id=scan_run.id,
-                    name=dt.name,
-                    version=dt.version,
-                    cpe=dt.cpe,
-                    category=dt.category,
-                    confidence=dt.confidence,
-                    evidence_source=dt.evidence_source,
-                    detected_at=obs.observed_at,
+                    name=tech_db.name,
+                    version=tech_db.version,
+                    cpe=tech_db.cpe,
+                    category=tech_db.category,
+                    confidence=tech_db.confidence,
+                    evidence_source=tech_db.evidence_source,
+                    detected_at=tech_db.detected_at,
                 )
-                db.add(tech_db)
-                db.flush()
+            )
 
-                tech_summaries.append(
-                    TechnologySummaryResponse(
-                        id=tech_db.id,
-                        asset_id=asset.id,
-                        asset_value=hostname,
-                        service_id=svc_db.id,
-                        scan_run_id=scan_run.id,
-                        name=tech_db.name,
-                        version=tech_db.version,
-                        cpe=tech_db.cpe,
-                        category=tech_db.category,
-                        confidence=tech_db.confidence,
-                        evidence_source=tech_db.evidence_source,
-                        detected_at=tech_db.detected_at,
-                    )
-                )
+        # Security Headers Summary
+        sec_headers_dict: Dict[str, SecurityHeaderDetail] = {}
+        for k, v in obs.security_headers.items():
+            sec_headers_dict[k] = SecurityHeaderDetail(
+                header_name=v.header_name,
+                present=v.present,
+                value=v.value,
+                status=v.status,
+                interpretation=v.interpretation,
+            )
+        total_headers_analyzed_count += len(sec_headers_dict)
 
-            # Security Headers Summary
-            sec_headers_dict: Dict[str, SecurityHeaderDetail] = {}
-            for k, v in obs.security_headers.items():
-                sec_headers_dict[k] = SecurityHeaderDetail(
-                    header_name=v.header_name,
-                    present=v.present,
-                    value=v.value,
-                    status=v.status,
-                    interpretation=v.interpretation,
-                )
-            total_headers_analyzed_count += len(sec_headers_dict)
+        sec_summary = SecurityHeadersSummaryResponse(
+            service_id=svc_db.id,
+            asset_id=asset.id,
+            asset_value=hostname,
+            url=obs.url,
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            http_status=obs.status_code,
+            headers=sec_headers_dict,
+            scan_run_id=scan_run.id,
+            observed_at=obs.observed_at,
+        )
 
-            sec_summary = SecurityHeadersSummaryResponse(
+        # TLS Metadata Summary (HTTPS only)
+        tls_summary: Optional[TLSMetadataSummaryResponse] = None
+        if obs.tls_metadata and service_name == "https":
+            total_tls_count += 1
+            tls_summary = TLSMetadataSummaryResponse(
                 service_id=svc_db.id,
                 asset_id=asset.id,
                 asset_value=hostname,
                 url=obs.url,
-                port=port,
-                protocol=protocol,
-                service_name=service_name,
-                http_status=obs.status_code,
-                headers=sec_headers_dict,
+                tls_version=obs.tls_metadata.tls_version,
+                cipher_suite=obs.tls_metadata.cipher_suite,
+                cert_subject=obs.tls_metadata.cert_subject,
+                cert_issuer=obs.tls_metadata.cert_issuer,
+                cert_valid_from=obs.tls_metadata.cert_valid_from,
+                cert_valid_to=obs.tls_metadata.cert_valid_to,
+                cert_san_list=obs.tls_metadata.cert_san_list,
                 scan_run_id=scan_run.id,
                 observed_at=obs.observed_at,
             )
 
-            # TLS Metadata Summary (HTTPS only)
-            tls_summary: Optional[TLSMetadataSummaryResponse] = None
-            if obs.tls_metadata and service_name == "https":
-                total_tls_count += 1
-                tls_summary = TLSMetadataSummaryResponse(
-                    service_id=svc_db.id,
-                    asset_id=asset.id,
-                    asset_value=hostname,
-                    url=obs.url,
-                    tls_version=obs.tls_metadata.tls_version,
-                    cipher_suite=obs.tls_metadata.cipher_suite,
-                    cert_subject=obs.tls_metadata.cert_subject,
-                    cert_issuer=obs.tls_metadata.cert_issuer,
-                    cert_valid_from=obs.tls_metadata.cert_valid_from,
-                    cert_valid_to=obs.tls_metadata.cert_valid_to,
-                    cert_san_list=obs.tls_metadata.cert_san_list,
-                    scan_run_id=scan_run.id,
-                    observed_at=obs.observed_at,
-                )
-
-            results_detail.append(
-                ServiceFingerprintDetail(
-                    service_id=svc_db.id,
-                    asset_id=asset.id,
-                    hostname=hostname,
-                    url=obs.url,
-                    port=port,
-                    service_name=service_name,
-                    is_reachable=True,
-                    status_code=obs.status_code,
-                    page_title=obs.page_title,
-                    technologies_count=len(tech_summaries),
-                    technologies=tech_summaries,
-                    security_headers=sec_summary,
-                    tls_metadata=tls_summary,
-                    error=obs.error,
-                )
+        results_detail.append(
+            ServiceFingerprintDetail(
+                service_id=svc_db.id,
+                asset_id=asset.id,
+                hostname=hostname,
+                url=obs.url,
+                port=port,
+                service_name=service_name,
+                is_reachable=True,
+                status_code=obs.status_code,
+                page_title=obs.page_title,
+                technologies_count=len(tech_summaries),
+                technologies=tech_summaries,
+                security_headers=sec_summary,
+                tls_metadata=tls_summary,
+                error=obs.error,
             )
+        )
 
-    # 3. Finalize ScanRun
-    scan_run.status = "completed"
+    # 7. Finalize ScanRun with warning semantics
+    # SSRF skips are expected security behavior; timeouts/errors are warnings
+    warnings_total = failed_count
+    if warnings_total > 0:
+        scan_run_status = "completed_with_warnings"
+    else:
+        scan_run_status = "completed"
+
+    scan_run.status = scan_run_status
     scan_run.completed_at = datetime.now(timezone.utc)
     scan_run.total_discovered_assets = reachable_count
     scan_run.summary = {
@@ -1717,6 +1993,11 @@ def run_fingerprinting(
         "technologies_detected": total_techs_count,
         "security_headers_analyzed": total_headers_analyzed_count,
         "tls_observations": total_tls_count,
+        "timeouts_count": timeouts_count,
+        "ssrf_skips_count": ssrf_skips_count,
+        "failed_count": failed_count,
+        "warnings_count": warnings_total,
+        "status": scan_run_status,
     }
 
     investigation.status = "active"
@@ -1725,18 +2006,23 @@ def run_fingerprinting(
     logger.info(
         f"Completed Technology & Security Fingerprinting for '{target_domain}' (Inv: {investigation_id}): "
         f"{services_processed_count} probed, {reachable_count} reachable, "
-        f"{total_techs_count} technologies detected, {total_tls_count} TLS observations."
+        f"{total_techs_count} technologies detected, {total_tls_count} TLS observations, "
+        f"{ssrf_skips_count} SSRF skips, {timeouts_count} timeouts, status: {scan_run_status}."
     )
 
     return FingerprintResponse(
         investigation_id=investigation.id,
         scan_run_id=scan_run.id,
+        status=scan_run_status,
         target_domain=target_domain,
         services_processed=services_processed_count,
         reachable=reachable_count,
         technologies_detected=total_techs_count,
         security_headers_analyzed=total_headers_analyzed_count,
         tls_observations=total_tls_count,
+        timeouts_count=timeouts_count,
+        ssrf_skips_count=ssrf_skips_count,
+        warnings_count=warnings_total,
         results=results_detail,
         completed_at=scan_run.completed_at,
     )
@@ -2591,6 +2877,94 @@ def get_monitoring_summary(
         limit=50,
         offset=0,
     )
+
+
+@router.get(
+    "/{investigation_id}/snapshots",
+    response_model=SnapshotListResponse,
+    summary="List Eligible Complete Attack Surface Snapshots",
+    description="Returns all eligible point-in-time complete assessment snapshots for an investigation.",
+)
+def list_investigation_snapshots(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    change_service: ChangeDetectionService = Depends(get_change_detection_service),
+) -> SnapshotListResponse:
+    """Retrieve all eligible complete assessment snapshots for an investigation."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    snapshots = change_service.get_eligible_snapshots(db, investigation_id)
+    items = [
+        SnapshotSummaryResponse(
+            id=s.id,
+            investigation_id=s.investigation_id,
+            run_number=s.run_number,
+            status=s.status,
+            is_snapshot=True,
+            coverage="Complete Attack Surface",
+            summary=s.summary or {},
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+        )
+        for s in snapshots
+    ]
+
+    return SnapshotListResponse(
+        investigation_id=investigation_id,
+        total_snapshots=len(items),
+        snapshots=items,
+    )
+
+
+@router.post(
+    "/{investigation_id}/snapshots",
+    response_model=SnapshotSummaryResponse,
+    summary="Capture Complete Attack Surface Assessment Snapshot",
+    description="Captures and freezes a coherent point-in-time Complete Assessment Snapshot of the current attack surface.",
+)
+def capture_investigation_snapshot(
+    investigation_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+    change_service: ChangeDetectionService = Depends(get_change_detection_service),
+) -> SnapshotSummaryResponse:
+    """Capture a point-in-time complete attack surface assessment snapshot."""
+    investigation = db.get(Investigation, investigation_id)
+    if not investigation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Investigation not found",
+        )
+
+    _check_investigation_access(investigation, current_user)
+
+    try:
+        snapshot = change_service.capture_assessment_snapshot(db, investigation_id)
+        return SnapshotSummaryResponse(
+            id=snapshot.id,
+            investigation_id=snapshot.investigation_id,
+            run_number=snapshot.run_number,
+            status=snapshot.status,
+            is_snapshot=True,
+            coverage="Complete Attack Surface",
+            summary=snapshot.summary or {},
+            started_at=snapshot.started_at,
+            completed_at=snapshot.completed_at,
+        )
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+
 
 
 

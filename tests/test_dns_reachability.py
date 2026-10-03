@@ -1029,3 +1029,243 @@ def test_ssrf_private_ips_persists_dns_records_but_skips_http_in_investigation()
         assert sub_db.is_resolving is True
 
 
+# =====================================================================
+# 5. CONCURRENCY, CACHING, & PERFORMANCE TESTS
+# =====================================================================
+
+def test_dns_cache_behavior():
+    """Verify thread-safe per-ScanRun DNSCache operations and hit retrieval."""
+    from backend.app.services.dns_service import DNSCache
+
+    cache = DNSCache()
+    assert len(cache) == 0
+
+    res = DNSResolutionResult(
+        hostname="cached.example.com",
+        is_resolving=True,
+        records=[DNSObservation(record_type="A", value="1.2.3.4", ttl=300)],
+    )
+    cache.set("cached.example.com.", res)
+    assert len(cache) == 1
+
+    # Case-insensitive and trailing dot normalized
+    hit = cache.get("CACHED.EXAMPLE.COM")
+    assert hit is not None
+    assert hit.is_resolving is True
+    assert len(hit.records) == 1
+    assert hit.records[0].value == "1.2.3.4"
+
+    miss = cache.get("uncached.example.com")
+    assert miss is None
+
+    cache.clear()
+    assert len(cache) == 0
+
+
+def test_dns_service_uses_cache_to_avoid_duplicate_queries():
+    """Verify DNSService retrieves from cache on second lookup without resolver calls."""
+    mock_resolver = MagicMock()
+    mock_answer = MagicMock()
+    mock_answer.rrset.ttl = 300
+    mock_rdata = MagicMock()
+    mock_rdata.__str__.return_value = "93.184.216.34"
+    mock_answer.__iter__.return_value = [mock_rdata]
+
+    mock_resolver.resolve.return_value = mock_answer
+    mock_resolver.nameservers = ["1.1.1.1"]
+
+    service = DNSService(resolver=mock_resolver)
+    res1 = service.resolve("duplicate.example.com")
+    assert res1.is_resolving is True
+    assert mock_resolver.resolve.call_count >= 1
+
+    initial_call_count = mock_resolver.resolve.call_count
+
+    # Second lookup should hit cache
+    res2 = service.resolve("duplicate.example.com")
+    assert res2.is_resolving is True
+    assert res2.records[0].value == "93.184.216.34"
+    # Resolver was NOT called again
+    assert mock_resolver.resolve.call_count == initial_call_count
+
+
+def test_dns_fast_fail_on_nxdomain_and_no_nameservers():
+    """Verify NXDOMAIN and NoNameservers fail fast on the first query without querying remaining types."""
+    mock_resolver = MagicMock()
+    mock_resolver.resolve.side_effect = dns.resolver.NoNameservers()
+    mock_resolver.nameservers = []
+
+    service = DNSService(resolver=mock_resolver)
+    result = service.resolve("nonameservers.example.com")
+
+    assert result.is_resolving is False
+    assert result.error == "No Nameservers Available"
+    # Only 1 query was attempted before failing fast (not 6 queries)
+    assert mock_resolver.resolve.call_count == 1
+
+
+def test_dns_resolve_batch_concurrency():
+    """Verify resolve_batch resolves multiple hostnames concurrently."""
+    mock_resolver = MagicMock()
+
+    def resolve_side_effect(qname, rtype):
+        if rtype == "A":
+            mock_ans = MagicMock()
+            mock_ans.rrset.ttl = 300
+            mock_r = MagicMock()
+            mock_r.__str__.return_value = f"198.51.100.{hash(qname) % 250}"
+            mock_ans.__iter__.return_value = [mock_r]
+            return mock_ans
+        raise dns.resolver.NoAnswer()
+
+    mock_resolver.resolve.side_effect = resolve_side_effect
+    mock_resolver.nameservers = ["1.1.1.1"]
+
+    service = DNSService(resolver=mock_resolver)
+    hosts = [f"host-{i}.example.com" for i in range(20)]
+
+    batch_res = service.resolve_batch(hosts, max_concurrency=10)
+
+    assert len(batch_res) == 20
+    for host in hosts:
+        assert host in batch_res
+        assert batch_res[host].is_resolving is True
+
+
+def test_reachability_probe_batch_concurrency():
+    """Verify probe_batch executes reachability probes concurrently."""
+    mock_client = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.url = "https://example.com"
+    mock_resp.text = "<html><title>OK</title></html>"
+    mock_client.get.return_value = mock_resp
+
+    service = ReachabilityService(client=mock_client)
+    items = [(f"app-{i}.example.com", ["93.184.216.34"]) for i in range(10)]
+
+    batch_probes = service.probe_batch(items, max_concurrency=5)
+
+    assert len(batch_probes) == 10
+    for host, _ in items:
+        assert host in batch_probes
+        assert len(batch_probes[host]) == 2
+        assert any(p.is_reachable is True for p in batch_probes[host])
+
+
+def test_completed_with_warnings_scan_run_status():
+    """Verify that an investigation encountering DNS timeouts finishes with completed_with_warnings."""
+    headers = get_auth_headers("analyst_one")
+    create_res = client.post(
+        "/api/investigations",
+        json={"name": "Warnings Test", "target_domain": "warnings-target.com"},
+        headers=headers,
+    )
+    assert create_res.status_code == 201
+    inv_id = uuid.UUID(create_res.json()["id"])
+    target_id = uuid.UUID(create_res.json()["target_id"])
+
+    # Seed 2 candidates: 1 good, 1 timeout
+    with TestingSessionLocal() as db:
+        domain_rec = db.query(Domain).filter(Domain.domain_name == "warnings-target.com").first()
+        asset1 = Asset(
+            target_id=target_id,
+            investigation_id=inv_id,
+            asset_type="subdomain",
+            value="good.warnings-target.com",
+            is_active=False,
+            source="crt.sh",
+        )
+        asset2 = Asset(
+            target_id=target_id,
+            investigation_id=inv_id,
+            asset_type="subdomain",
+            value="timeout.warnings-target.com",
+            is_active=False,
+            source="crt.sh",
+        )
+        db.add_all([asset1, asset2])
+        db.flush()
+        sub1 = Subdomain(asset_id=asset1.id, domain_id=domain_rec.id, subdomain_name="good.warnings-target.com")
+        sub2 = Subdomain(asset_id=asset2.id, domain_id=domain_rec.id, subdomain_name="timeout.warnings-target.com")
+        db.add_all([sub1, sub2])
+        db.commit()
+
+    # Mock DNS
+    mock_dns = MagicMock()
+    def mock_resolve(hostname, **kwargs):
+        if "good.warnings-target.com" in hostname or "warnings-target.com" == hostname:
+            return DNSResolutionResult(
+                hostname=hostname,
+                is_resolving=True,
+                records=[DNSObservation(record_type="A", value="93.184.216.34", ttl=300)],
+            )
+        return DNSResolutionResult(
+            hostname=hostname,
+            is_resolving=False,
+            records=[],
+            error="Query Timeout",
+        )
+
+    mock_dns.resolve_batch.side_effect = lambda hostnames, **kwargs: {h: mock_resolve(h) for h in hostnames}
+
+    mock_reach = MagicMock()
+    mock_reach.probe_batch.return_value = {}
+
+    app.dependency_overrides[get_dns_service] = lambda: mock_dns
+    app.dependency_overrides[get_reachability_service] = lambda: mock_reach
+    try:
+        res = client.post(f"/api/investigations/{inv_id}/resolve", headers=headers)
+    finally:
+        app.dependency_overrides.pop(get_dns_service, None)
+        app.dependency_overrides.pop(get_reachability_service, None)
+
+    assert res.status_code == 200
+    data = res.json()
+
+    assert data["status"] == "completed_with_warnings"
+    assert data["timeouts_count"] >= 1
+    assert data["warnings_count"] >= 1
+
+    scan_run_id = uuid.UUID(data["scan_run_id"])
+    with TestingSessionLocal() as db:
+        scan_run = db.get(ScanRun, scan_run_id)
+        assert scan_run.status == "completed_with_warnings"
+        assert scan_run.summary["timeouts_count"] >= 1
+        assert scan_run.summary["status"] == "completed_with_warnings"
+
+
+def test_large_hostname_batch_performance_simulation():
+    """Verify that a batch of 100 candidate hostnames is resolved efficiently using controlled concurrency."""
+    import time
+
+    mock_resolver = MagicMock()
+    def simulated_dns_call(qname, rtype):
+        time.sleep(0.01)  # Simulate 10ms network latency per query
+        if rtype == "A":
+            mock_ans = MagicMock()
+            mock_ans.rrset.ttl = 300
+            mock_r = MagicMock()
+            mock_r.__str__.return_value = "192.0.2.1"
+            mock_ans.__iter__.return_value = [mock_r]
+            return mock_ans
+        raise dns.resolver.NoAnswer()
+
+    mock_resolver.resolve.side_effect = simulated_dns_call
+    mock_resolver.nameservers = ["1.1.1.1"]
+
+    service = DNSService(resolver=mock_resolver)
+    hostnames = [f"subdomain-{i}.large-scale-test.com" for i in range(100)]
+
+    start_time = time.perf_counter()
+    results = service.resolve_batch(hostnames, max_concurrency=25)
+    elapsed = time.perf_counter() - start_time
+
+    assert len(results) == 100
+    assert all(r.is_resolving for r in results.values())
+    # 100 hostnames with 10ms latency serially would take 1.0s.
+    # Concurrently with 25 workers, it completes in ~0.1 - 0.3s.
+    assert elapsed < 1.5, f"Batch resolution took {elapsed:.2f}s, expected < 1.5s"
+
+
+

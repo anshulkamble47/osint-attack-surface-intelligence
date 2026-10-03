@@ -8,11 +8,15 @@ import {
   Cpu,
   Flame,
   Zap,
-  Globe
+  Globe,
+  CheckCircle2,
+  Layers,
+  Target
 } from 'lucide-react';
 import { InvestigationResponse, ScanRunResponse } from '../../types/api';
 import { StatusBadge } from '../common/StatusBadge';
 import { EmptyState } from '../common/EmptyState';
+import { CompactStatCard } from '../common/CompactStatCard';
 
 interface ScanRunsViewProps {
   investigation: InvestigationResponse;
@@ -61,93 +65,130 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
     return `${min}m ${sec % 60}s`;
   };
 
+  const completedCount = scanRuns.filter(s => s.status === 'completed' || s.status === 'COMPLETED').length;
+  const latestRun = scanRuns.length > 0 ? scanRuns[0] : null;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-      {/* Header & Investigation Metadata */}
-      <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
+      {/* Header & Investigation Scope */}
+      <div className="glass-panel" style={{ padding: '1rem 1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.85rem' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
               <div style={{
                 background: 'rgba(56, 189, 248, 0.15)',
                 color: 'var(--cyan-400)',
-                padding: '0.45rem',
+                padding: '0.4rem',
                 borderRadius: '8px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center'
               }}>
-                <History size={20} />
+                <History size={18} />
               </div>
-              <h2 style={{ fontSize: '1.35rem', fontWeight: 700 }}>Investigation & ScanRun History</h2>
+              <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Investigation & ScanRun History</h2>
+              <span className="badge badge-info" style={{ fontSize: '0.68rem' }}>Scan Timeline</span>
             </div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: '800px' }}>
-              Detailed point-in-time scan execution timeline, investigation parameters, and modular pipeline execution triggers.
+            <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0 }}>
+              Point-in-time scan execution timeline, scan parameter provenance, and modular pipeline triggers.
             </p>
           </div>
 
           <button
             onClick={onRefreshScans}
             className="btn btn-secondary"
-            style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem' }}
+            style={{ padding: '0.35rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Activity size={14} />
+            <Activity size={13} />
             <span>Refresh Scan History</span>
           </button>
         </div>
 
-        {/* Investigation Details Card */}
-        <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '1.25rem', marginTop: '1.25rem' }}>
-          <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--cyan-400)', letterSpacing: '0.04em', marginBottom: '0.75rem' }}>
-            INVESTIGATION SCOPE & ATTRIBUTES
+        {/* Investigation Details Pill */}
+        <div style={{
+          background: 'rgba(15, 23, 42, 0.6)',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: '8px',
+          padding: '0.75rem 1rem',
+          marginTop: '0.85rem',
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+          gap: '0.75rem',
+          fontSize: '0.78rem'
+        }}>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Investigation Title: </span>
+            <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.1rem' }}>{investigation.title}</div>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '1rem', fontSize: '0.82rem' }}>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Investigation Title: </span>
-              <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginTop: '0.15rem' }}>{investigation.title}</div>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Target Domain: </span>
-              <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--cyan-400)', marginTop: '0.15rem' }}>{investigation.target_domain}</div>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Organization: </span>
-              <div style={{ color: 'var(--text-primary)', marginTop: '0.15rem' }}>{investigation.scan_options?.organization || 'Not Specified'}</div>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Reference Code: </span>
-              <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>{investigation.reference_code}</div>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Investigation UUID: </span>
-              <div style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.15rem', wordBreak: 'break-all' }}>{investigation.id}</div>
-            </div>
-            <div>
-              <span style={{ color: 'var(--text-muted)' }}>Created Date: </span>
-              <div style={{ color: 'var(--text-primary)', marginTop: '0.15rem' }}>{new Date(investigation.created_at).toLocaleString()}</div>
-            </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Target Scope Domain: </span>
+            <div style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--cyan-400)', marginTop: '0.1rem' }}>{investigation.target_domain}</div>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Organization: </span>
+            <div style={{ color: 'var(--text-primary)', marginTop: '0.1rem' }}>{investigation.scan_options?.organization || 'Not Specified'}</div>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Reference Code: </span>
+            <div style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-secondary)', marginTop: '0.1rem' }}>{investigation.reference_code}</div>
+          </div>
+          <div>
+            <span style={{ color: 'var(--text-muted)' }}>Created At: </span>
+            <div style={{ color: 'var(--text-primary)', marginTop: '0.1rem' }}>{new Date(investigation.created_at).toLocaleString()}</div>
           </div>
         </div>
       </div>
 
+      {/* Compact Metrics Strip */}
+      <div className="compact-stats-grid">
+        <CompactStatCard
+          icon={Layers}
+          label="Total Scan Runs"
+          value={scanRuns.length}
+          subtext="Executed pipeline runs"
+          color="cyan"
+        />
+        <CompactStatCard
+          icon={CheckCircle2}
+          label="Completed Runs"
+          value={completedCount}
+          subtext="Successful execution"
+          color="emerald"
+        />
+        <CompactStatCard
+          icon={Target}
+          label="Target Scope"
+          value={investigation.target_domain}
+          subtext="Assessment apex domain"
+          color="purple"
+        />
+        <CompactStatCard
+          icon={Clock}
+          label="Latest Execution"
+          value={latestRun ? `Run #${latestRun.run_number}` : 'None'}
+          subtext={latestRun ? new Date(latestRun.started_at).toLocaleTimeString() : 'No scan runs'}
+          color="amber"
+        />
+      </div>
+
       {/* Manual Pipeline Execution Station */}
-      <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '0.5rem', display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-          <Zap size={16} color="var(--cyan-400)" />
-          <span>On-Demand Intelligence Pipeline Triggers</span>
+      <div className="glass-panel" style={{ padding: '1rem 1.25rem' }}>
+        <h3 style={{ fontSize: '0.9rem', fontWeight: 600, marginBottom: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <Zap size={14} color="var(--cyan-400)" />
+          <span>Modular OSINT Intelligence Pipeline Triggers</span>
         </h3>
-        <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '1rem' }}>
-          Execute modular OSINT discovery and correlation stages against target <strong>{investigation.target_domain}</strong>.
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '0.75rem' }}>
+          Execute discrete discovery, enrichment, correlation, and risk assessment stages on target <strong>{investigation.target_domain}</strong>.
         </p>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: '0.5rem' }}>
           <button
             onClick={onRunCT}
             disabled={runningCT}
             className="btn btn-secondary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Search size={15} className={runningCT ? 'spin' : ''} />
+            <Search size={13} className={runningCT ? 'spin' : ''} />
             <span>{runningCT ? 'Scanning CT...' : '1. Discover CT'}</span>
           </button>
 
@@ -155,29 +196,29 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
             onClick={onRunResolve}
             disabled={runningResolve}
             className="btn btn-secondary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Radio size={15} className={runningResolve ? 'spin' : ''} />
-            <span>{runningResolve ? 'Probing DNS...' : '2. DNS & Reachability'}</span>
+            <Radio size={13} className={runningResolve ? 'spin' : ''} />
+            <span>{runningResolve ? 'Probing DNS...' : '2. Resolve DNS'}</span>
           </button>
 
           <button
             onClick={onRunIPEnrich}
             disabled={runningIPEnrich}
             className="btn btn-secondary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Globe size={15} className={runningIPEnrich ? 'spin' : ''} />
-            <span>{runningIPEnrich ? 'Enriching IP, ASN & RDAP...' : '3. IP / ASN / RDAP'}</span>
+            <Globe size={13} className={runningIPEnrich ? 'spin' : ''} />
+            <span>{runningIPEnrich ? 'Enriching IP...' : '3. IP/ASN/RDAP'}</span>
           </button>
 
           <button
             onClick={onRunFingerprint}
             disabled={runningFingerprint}
             className="btn btn-secondary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Cpu size={15} className={runningFingerprint ? 'spin' : ''} />
+            <Cpu size={13} className={runningFingerprint ? 'spin' : ''} />
             <span>{runningFingerprint ? 'Fingerprinting...' : '4. Tech & Headers'}</span>
           </button>
 
@@ -185,9 +226,9 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
             onClick={onRunVulnCorrelate}
             disabled={runningVulnCorrelate}
             className="btn btn-secondary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem' }}
           >
-            <Flame size={15} className={runningVulnCorrelate ? 'spin' : ''} />
+            <Flame size={13} className={runningVulnCorrelate ? 'spin' : ''} />
             <span>{runningVulnCorrelate ? 'Correlating...' : '5. Correlate CVEs'}</span>
           </button>
 
@@ -195,9 +236,9 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
             onClick={onRunFindings}
             disabled={runningFindings}
             className="btn btn-primary"
-            style={{ justifyContent: 'center', padding: '0.65rem 1rem', background: 'linear-gradient(135deg, #e11d48, #f43f5e)', border: 'none' }}
+            style={{ justifyContent: 'center', padding: '0.5rem 0.75rem', fontSize: '0.78rem', background: 'linear-gradient(135deg, #e11d48, #f43f5e)', border: 'none' }}
           >
-            <Zap size={15} className={runningFindings ? 'spin' : ''} />
+            <Zap size={13} className={runningFindings ? 'spin' : ''} />
             <span>{runningFindings ? 'Assessing Risk...' : '6. Generate Findings'}</span>
           </button>
         </div>
@@ -205,20 +246,20 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
 
       {/* Scan Runs List and Inspector */}
       {scanRuns.length > 0 ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1.25rem', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1.1fr)', gap: '1rem', alignItems: 'start' }}>
 
           {/* Left: ScanRuns Table */}
-          <div className="glass-panel" style={{ padding: '1rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.85rem' }}>
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600 }}>
+          <div className="glass-panel" style={{ padding: '0.85rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.65rem' }}>
+              <h3 style={{ fontSize: '0.9rem', fontWeight: 600 }}>
                 Point-in-Time Scan Runs ({scanRuns.length})
               </h3>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                 Click scan run to inspect execution state
               </span>
             </div>
 
-            <div style={{ maxHeight: '480px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div style={{ maxHeight: '480px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '0.45rem' }}>
               {scanRuns.map(scan => {
                 const isSelected = selectedScan?.id === scan.id;
 
@@ -227,7 +268,7 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
                     key={scan.id}
                     onClick={() => setSelectedScan(scan)}
                     style={{
-                      padding: '0.85rem',
+                      padding: '0.75rem',
                       borderRadius: '8px',
                       background: isSelected ? 'rgba(56, 189, 248, 0.12)' : 'rgba(30, 41, 59, 0.45)',
                       border: `1px solid ${isSelected ? 'var(--cyan-400)' : 'var(--border-subtle)'}`,
@@ -235,27 +276,27 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
                       transition: 'all 0.15s ease',
                       display: 'flex',
                       flexDirection: 'column',
-                      gap: '0.45rem',
+                      gap: '0.35rem',
                     }}
                   >
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
-                        <span style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.4rem' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                        <span style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
                           Run #{scan.run_number}
                         </span>
-                        <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>
+                        <span className="badge badge-neutral" style={{ fontSize: '0.62rem' }}>
                           Assets: {scan.total_discovered_assets}
                         </span>
                       </div>
                       <StatusBadge status={scan.status} />
                     </div>
 
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
                       <span>Started: {new Date(scan.started_at).toLocaleString()}</span>
                       <span>Duration: {calculateDuration(scan.started_at, scan.completed_at)}</span>
                     </div>
 
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       ID: {scan.id}
                     </div>
                   </div>
@@ -265,31 +306,31 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
           </div>
 
           {/* Right: Selected ScanRun Inspector */}
-          <div className="glass-panel" style={{ padding: '1.5rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.85rem' }}>
-              <Clock size={18} color="var(--cyan-400)" />
-              <h4 style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+          <div className="glass-panel" style={{ padding: '1.25rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.65rem' }}>
+              <Clock size={16} color="var(--cyan-400)" />
+              <h4 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                 ScanRun Point-in-Time Inspector
               </h4>
             </div>
 
             {selectedScan ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.1rem' }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
-                    <div style={{ fontSize: '1.2rem', fontWeight: 800, color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
+                    <div style={{ fontSize: '1.15rem', fontWeight: 800, color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>
                       Scan Run #{selectedScan.run_number}
                     </div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                       {selectedScan.id}
                     </div>
                   </div>
                   <StatusBadge status={selectedScan.status} />
                 </div>
 
-                <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.85rem', display: 'flex', flexDirection: 'column', gap: '0.5rem', fontSize: '0.8rem' }}>
+                <div style={{ background: 'rgba(15, 23, 42, 0.6)', border: '1px solid var(--border-subtle)', borderRadius: '8px', padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.78rem' }}>
                   <div>
-                    <span style={{ color: 'var(--text-muted)' }}>Target Domain Scope: </span>
+                    <span style={{ color: 'var(--text-muted)' }}>Target Scope Domain: </span>
                     <span style={{ fontFamily: 'var(--font-mono)', color: 'var(--cyan-400)' }}>{investigation.target_domain}</span>
                   </div>
                   <div>
@@ -320,19 +361,20 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
 
                 {selectedScan.summary && Object.keys(selectedScan.summary).length > 0 && (
                   <div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>Scan Execution Summary</div>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.25rem' }}>Scan Execution Summary Telemetry</div>
                     <pre
                       style={{
                         background: 'rgba(0,0,0,0.4)',
-                        padding: '0.75rem',
+                        padding: '0.65rem',
                         borderRadius: '6px',
-                        fontSize: '0.75rem',
+                        fontSize: '0.72rem',
                         fontFamily: 'var(--font-mono)',
                         color: 'var(--text-secondary)',
-                        maxHeight: '200px',
+                        maxHeight: '180px',
                         overflowY: 'auto',
                         whiteSpace: 'pre-wrap',
-                        border: '1px solid var(--border-subtle)'
+                        border: '1px solid var(--border-subtle)',
+                        margin: 0
                       }}
                     >
                       {JSON.stringify(selectedScan.summary, null, 2)}
@@ -341,7 +383,7 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
                 )}
               </div>
             ) : (
-              <div style={{ color: 'var(--text-muted)', fontSize: '0.85rem', textAlign: 'center', padding: '3.5rem 1rem' }}>
+              <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', textAlign: 'center', padding: '3rem 1rem' }}>
                 Select a scan run to view execution telemetry.
               </div>
             )}
@@ -361,3 +403,5 @@ export const ScanRunsView: React.FC<ScanRunsViewProps> = ({
     </div>
   );
 };
+
+export default ScanRunsView;

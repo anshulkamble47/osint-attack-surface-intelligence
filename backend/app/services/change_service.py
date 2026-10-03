@@ -23,16 +23,309 @@ from backend.app.schemas.change import (
 )
 
 
+DISQUALIFIED_OPERATIONS = {
+    "ct_discovery",
+    "dns_reachability_resolution",
+    "dns_reachability_probe",
+    "ip_enrichment_rdap_asn",
+    "ip_enrichment",
+    "technology_fingerprinting_http_security",
+    "technology_fingerprinting",
+    "vulnerability_intelligence_cve_correlation",
+    "vulnerability_correlation",
+    "findings_generation",
+    "graph_generation",
+}
+
+
 class ChangeDetectionService:
     """
     Deterministic Attack Surface Monitoring & Change Detection Service.
-    Compares two point-in-time ScanRuns and computes explicit, evidence-backed ADDED, REMOVED, and MODIFIED records.
+    Compares two point-in-time Complete Assessment Snapshots and computes explicit, evidence-backed ADDED, REMOVED, and MODIFIED records.
     Guarantees:
-    1. Historical ScanRun isolation (never mutates past scan runs)
-    2. Deterministic logical identities across all observation types
-    3. Idempotent comparison execution (no duplicate ChangeRecords)
-    4. Explicit authorization & investigation boundary checks
+    1. Complete Assessment Snapshot eligibility (operation-specific runs are disqualified)
+    2. Historical ScanRun isolation (never mutates past scan runs)
+    3. Deterministic logical identities across all observation types
+    4. Idempotent comparison execution (no duplicate ChangeRecords)
+    5. Explicit authorization & investigation boundary checks
     """
+
+    @staticmethod
+    def is_eligible_snapshot(scan: Optional[ScanRun]) -> bool:
+        """
+        Determines whether a ScanRun represents an eligible complete attack-surface assessment snapshot.
+        Operation-specific ScanRuns (e.g., CT-only, DNS-only, IP-only, Tech-only, CVE-only, Findings-only)
+        are NOT eligible complete monitoring snapshots.
+        """
+        if not scan:
+            return False
+        if scan.status not in ("completed", "completed_with_warnings"):
+            return False
+        summary = scan.summary or {}
+        if summary.get("is_snapshot") is True or summary.get("is_complete_snapshot") is True:
+            return True
+        op = summary.get("operation")
+        if op in ("complete_assessment", "attack_surface_snapshot", "full_assessment"):
+            return True
+        if op in DISQUALIFIED_OPERATIONS:
+            return False
+        src = summary.get("source")
+        if src in ("ip_enrichment", "dns_resolution", "dns_probe", "ct_discovery", "crt.sh", "certspotter", "virustotal", "securitytrails"):
+            return False
+        # If no operation/source string is defined (e.g. general test fixture scans / complete assessment runs), allow
+        if not op and not src:
+            return True
+        return False
+
+    def get_eligible_snapshots(self, db: Session, investigation_id: uuid.UUID) -> List[ScanRun]:
+        """Fetch all eligible complete assessment snapshots for an investigation in chronological order."""
+        scans = (
+            db.execute(
+                select(ScanRun)
+                .where(ScanRun.investigation_id == investigation_id)
+                .order_by(ScanRun.run_number.asc())
+            )
+            .scalars()
+            .all()
+        )
+        return [s for s in scans if self.is_eligible_snapshot(s)]
+
+    def capture_assessment_snapshot(
+        self,
+        db: Session,
+        investigation_id: uuid.UUID,
+    ) -> ScanRun:
+        """
+        Captures a coherent point-in-time Complete Assessment Snapshot of the current attack surface.
+        Links/associates all observable domain, DNS, IP, service, technology, vulnerability,
+        certificate, relationship, and finding records to this snapshot's ScanRun.
+        """
+        investigation = db.get(Investigation, investigation_id)
+        if not investigation:
+            raise ValueError(f"Investigation {investigation_id} not found")
+
+        now_utc = datetime.now(timezone.utc)
+
+        # Next run number
+        scan_run_count = db.execute(
+            select(func.count(ScanRun.id)).where(ScanRun.investigation_id == investigation.id)
+        ).scalar() or 0
+
+        # Fetch active investigation assets
+        assets = db.execute(
+            select(Asset).where(Asset.investigation_id == investigation_id, Asset.is_active == True)
+        ).scalars().all()
+
+        domains = [a for a in assets if a.asset_type == "domain"]
+        subdomains = [a for a in assets if a.asset_type == "subdomain"]
+        asset_ids = [a.id for a in assets]
+
+        # Create Complete Snapshot ScanRun
+        snapshot = ScanRun(
+            investigation_id=investigation_id,
+            run_number=scan_run_count + 1,
+            status="completed",
+            started_at=now_utc,
+            completed_at=now_utc,
+            total_discovered_assets=len(assets),
+            total_resolving_assets=len([s for s in subdomains]),
+            total_findings=0,
+            summary={
+                "operation": "complete_assessment",
+                "is_snapshot": True,
+                "coverage": "Complete Attack Surface",
+                "domains_count": len(domains),
+                "subdomains_count": len(subdomains),
+                "captured_at": now_utc.isoformat(),
+            },
+        )
+        db.add(snapshot)
+        db.flush()
+
+        # Update assets last_scan_run_id to this snapshot
+        for asset in assets:
+            asset.last_scan_run_id = snapshot.id
+
+        # 1. Snapshot DNS Records
+        dns_rows = db.execute(
+            select(DNSRecord)
+            .join(Subdomain, DNSRecord.subdomain_id == Subdomain.id)
+            .where(Subdomain.asset_id.in_(asset_ids))
+        ).scalars().all()
+
+        seen_dns = set()
+        snapshot_dns_count = 0
+        for rec in dns_rows:
+            dns_key = (rec.subdomain_id, rec.record_type, rec.value)
+            if dns_key not in seen_dns:
+                seen_dns.add(dns_key)
+                snap_rec = DNSRecord(
+                    subdomain_id=rec.subdomain_id,
+                    record_type=rec.record_type,
+                    value=rec.value,
+                    ttl=rec.ttl,
+                    scan_run_id=snapshot.id,
+                    resolver=rec.resolver,
+                    collected_at=now_utc,
+                )
+                db.add(snap_rec)
+                snapshot_dns_count += 1
+
+        # 2. Snapshot IP Observations
+        ip_obs_rows = db.execute(
+            select(IPObservation)
+            .join(ScanRun, IPObservation.scan_run_id == ScanRun.id)
+            .where(ScanRun.investigation_id == investigation_id)
+            .order_by(IPObservation.observed_at.desc())
+        ).scalars().all()
+
+        seen_ip_obs = set()
+        snapshot_ip_count = 0
+        for ipo in ip_obs_rows:
+            if ipo.ip_address_id not in seen_ip_obs:
+                seen_ip_obs.add(ipo.ip_address_id)
+                snap_ipo = IPObservation(
+                    ip_address_id=ipo.ip_address_id,
+                    asn_id=ipo.asn_id,
+                    scan_run_id=snapshot.id,
+                    observed_at=now_utc,
+                )
+                db.add(snap_ipo)
+                snapshot_ip_count += 1
+
+        # 3. Snapshot Service Exposures
+        svc_rows = db.execute(
+            select(ServiceExposure)
+            .where(ServiceExposure.asset_id.in_(asset_ids))
+        ).scalars().all()
+
+        seen_svcs = set()
+        snapshot_svc_count = 0
+        for svc in svc_rows:
+            svc_key = (svc.asset_id, svc.port, svc.protocol)
+            if svc_key not in seen_svcs:
+                seen_svcs.add(svc_key)
+                snap_svc = ServiceExposure(
+                    asset_id=svc.asset_id,
+                    scan_run_id=snapshot.id,
+                    port=svc.port,
+                    protocol=svc.protocol,
+                    service_name=svc.service_name,
+                    http_status=svc.http_status,
+                    page_title=svc.page_title,
+                    tls_version=svc.tls_version,
+                    security_headers=svc.security_headers,
+                    banner=svc.banner,
+                    observed_at=now_utc,
+                )
+                db.add(snap_svc)
+                snapshot_svc_count += 1
+
+        # 4. Snapshot Technologies and Vulnerability links
+        tech_rows = db.execute(
+            select(Technology)
+            .where(Technology.asset_id.in_(asset_ids))
+        ).scalars().all()
+
+        seen_techs = set()
+        snapshot_tech_count = 0
+        for tech in tech_rows:
+            tech_key = (tech.asset_id, tech.name, tech.version)
+            if tech_key not in seen_techs:
+                seen_techs.add(tech_key)
+                snap_tech = Technology(
+                    asset_id=tech.asset_id,
+                    service_id=None,
+                    scan_run_id=snapshot.id,
+                    name=tech.name,
+                    version=tech.version,
+                    cpe=tech.cpe,
+                    category=tech.category,
+                    confidence=tech.confidence,
+                    evidence_source=tech.evidence_source,
+                    detected_at=now_utc,
+                )
+                db.add(snap_tech)
+                db.flush()
+                snapshot_tech_count += 1
+
+                # Link existing vulnerability associations to the snapshot technology
+                tech_vulns = db.execute(
+                    select(TechnologyVulnerability).where(TechnologyVulnerability.technology_id == tech.id)
+                ).scalars().all()
+                for tv in tech_vulns:
+                    snap_tv = TechnologyVulnerability(
+                        technology_id=snap_tech.id,
+                        vulnerability_id=tv.vulnerability_id,
+                        match_confidence=tv.match_confidence,
+                        verification_status=tv.verification_status,
+                        notes=tv.notes,
+                        created_at=now_utc,
+                    )
+                    db.add(snap_tv)
+
+        # 5. Snapshot Certificates
+        cert_links = db.execute(
+            select(subdomain_certificates.c.subdomain_id, subdomain_certificates.c.certificate_id)
+            .join(Subdomain, subdomain_certificates.c.subdomain_id == Subdomain.id)
+            .where(Subdomain.asset_id.in_(asset_ids))
+        ).all()
+        seen_sub_certs = set()
+        for sub_id, cert_id in cert_links:
+            seen_sub_certs.add((sub_id, cert_id))
+        snapshot_cert_count = len(seen_sub_certs)
+
+        # 6. Snapshot Asset Relationships
+        rel_rows = db.execute(
+            select(AssetRelationship)
+            .where(AssetRelationship.investigation_id == investigation_id)
+        ).scalars().all()
+
+        seen_rels = set()
+        snapshot_rel_count = 0
+        for rel in rel_rows:
+            rel_key = (rel.source_asset_id, rel.target_asset_id, rel.relationship_type)
+            if rel_key not in seen_rels:
+                seen_rels.add(rel_key)
+                snap_rel = AssetRelationship(
+                    investigation_id=investigation_id,
+                    source_asset_id=rel.source_asset_id,
+                    target_asset_id=rel.target_asset_id,
+                    relationship_type=rel.relationship_type,
+                    scan_run_id=snapshot.id,
+                    confidence=rel.confidence,
+                    attributes=rel.attributes or {},
+                    created_at=now_utc,
+                )
+                db.add(snap_rel)
+                snapshot_rel_count += 1
+
+        # 7. Snapshot Findings
+        finding_rows = db.execute(
+            select(Finding)
+            .where(Finding.investigation_id == investigation_id, Finding.status == "active")
+        ).scalars().all()
+        snapshot.total_findings = len(finding_rows)
+
+        # Update summary counts
+        summary = dict(snapshot.summary or {})
+        summary.update({
+            "dns_records_count": snapshot_dns_count,
+            "ips_count": snapshot_ip_count,
+            "services_count": snapshot_svc_count,
+            "technologies_count": snapshot_tech_count,
+            "certificates_count": snapshot_cert_count,
+            "relationships_count": snapshot_rel_count,
+            "findings_count": len(finding_rows),
+        })
+        snapshot.summary = summary
+
+        db.commit()
+        db.refresh(snapshot)
+        logger.info(
+            f"Captured Complete Assessment Snapshot #{snapshot.run_number} for Investigation '{investigation.reference_code}' (ID: {snapshot.id})"
+        )
+        return snapshot
 
     def compare_scan_runs(
         self,
@@ -42,29 +335,30 @@ class ChangeDetectionService:
         current_scan_run_id: Optional[uuid.UUID] = None,
     ) -> ComparisonSummaryResponse:
         """
-        Execute deterministic comparison between baseline and current ScanRuns.
-        If ScanRun IDs are omitted, resolves previous completed scan vs latest completed scan.
+        Execute deterministic comparison between baseline and current complete assessment snapshots.
+        If Snapshot IDs are omitted, resolves previous completed snapshot vs latest completed snapshot.
         """
         investigation = db.get(Investigation, investigation_id)
         if not investigation:
             raise ValueError(f"Investigation {investigation_id} not found")
 
-        # 1. Resolve Baseline and Current ScanRuns
-        baseline_scan, current_scan = self._resolve_scan_runs(
+        # 1. Resolve Baseline and Current Complete Snapshots
+        baseline_scan, current_scan, is_single_baseline = self._resolve_scan_runs(
             db=db,
             investigation_id=investigation_id,
             baseline_scan_run_id=baseline_scan_run_id,
             current_scan_run_id=current_scan_run_id,
         )
 
-        # Edge case: Same ScanRun compared with itself produces exactly 0 changes
-        if baseline_scan and current_scan and baseline_scan.id == current_scan.id:
-            now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(timezone.utc)
+
+        # First Snapshot / Baseline Established Semantics
+        if is_single_baseline or (baseline_scan and current_scan and baseline_scan.id == current_scan.id):
             return ComparisonSummaryResponse(
                 investigation_id=investigation_id,
-                baseline_scan_run_id=baseline_scan.id,
+                baseline_scan_run_id=baseline_scan.id if baseline_scan else current_scan.id,
                 current_scan_run_id=current_scan.id,
-                baseline_scan_run_number=baseline_scan.run_number,
+                baseline_scan_run_number=baseline_scan.run_number if baseline_scan else current_scan.run_number,
                 current_scan_run_number=current_scan.run_number,
                 total_changes=0,
                 added_count=0,
@@ -74,10 +368,13 @@ class ChangeDetectionService:
                 changes_by_type={},
                 changes=[],
                 compared_at=now_utc,
-                message="Baseline and Current ScanRuns are identical. No differences observed.",
+                message=(
+                    "Baseline Established — No Prior Snapshot for Diffing. "
+                    "The current completed assessment establishes the baseline attack surface. "
+                    "Changes will appear after a subsequent completed assessment is executed and compared."
+                ),
             )
 
-        now_utc = datetime.now(timezone.utc)
         baseline_id = baseline_scan.id if baseline_scan else None
         current_id = current_scan.id
 
@@ -286,6 +583,23 @@ class ChangeDetectionService:
         """Query and filter computed change records for an investigation."""
         query = select(ChangeRecord).where(ChangeRecord.investigation_id == investigation_id)
 
+        # Invalidate/filter out records from ineligible operation runs (e.g. historical Run #21 vs #22)
+        all_scans = db.execute(
+            select(ScanRun).where(ScanRun.investigation_id == investigation_id)
+        ).scalars().all()
+        ineligible_ids = {s.id for s in all_scans if not self.is_eligible_snapshot(s)}
+
+        if ineligible_ids:
+            query = query.where(
+                and_(
+                    ~ChangeRecord.current_scan_id.in_(ineligible_ids),
+                    or_(
+                        ChangeRecord.previous_scan_id.is_(None),
+                        ~ChangeRecord.previous_scan_id.in_(ineligible_ids),
+                    ),
+                )
+            )
+
         if baseline_scan_run_id:
             query = query.where(ChangeRecord.previous_scan_id == baseline_scan_run_id)
         if current_scan_run_id:
@@ -339,8 +653,8 @@ class ChangeDetectionService:
         investigation_id: uuid.UUID,
         baseline_scan_run_id: Optional[uuid.UUID],
         current_scan_run_id: Optional[uuid.UUID],
-    ) -> Tuple[Optional[ScanRun], ScanRun]:
-        """Validate or automatically resolve baseline and current ScanRuns."""
+    ) -> Tuple[Optional[ScanRun], ScanRun, bool]:
+        """Validate or automatically resolve baseline and current Complete Assessment Snapshots."""
         if baseline_scan_run_id and current_scan_run_id:
             base = db.get(ScanRun, baseline_scan_run_id)
             curr = db.get(ScanRun, current_scan_run_id)
@@ -348,53 +662,73 @@ class ChangeDetectionService:
                 raise ValueError("One or both specified ScanRuns do not exist")
             if base.investigation_id != investigation_id or curr.investigation_id != investigation_id:
                 raise ValueError("ScanRun does not belong to the requested investigation")
-            return base, curr
+            if not self.is_eligible_snapshot(base):
+                op = (base.summary or {}).get("operation") or (base.summary or {}).get("source") or "operation_specific"
+                raise ValueError(
+                    f"ScanRun #{base.run_number} is an operation-specific run ({op}) and is not an eligible complete assessment snapshot."
+                )
+            if not self.is_eligible_snapshot(curr):
+                op = (curr.summary or {}).get("operation") or (curr.summary or {}).get("source") or "operation_specific"
+                raise ValueError(
+                    f"ScanRun #{curr.run_number} is an operation-specific run ({op}) and is not an eligible complete assessment snapshot."
+                )
+            if base.id == curr.id:
+                return base, curr, True
+            return base, curr, False
 
-        # Auto-resolve from investigation scan history
-        scans = (
-            db.execute(
-                select(ScanRun)
-                .where(ScanRun.investigation_id == investigation_id)
-                .order_by(ScanRun.run_number.asc())
-            )
-            .scalars()
-            .all()
-        )
+        # Auto-resolve from investigation eligible snapshots
+        eligible = self.get_eligible_snapshots(db, investigation_id)
 
-        if not scans:
-            raise ValueError(f"No ScanRuns found for investigation {investigation_id}")
+        if not eligible:
+            raise ValueError(f"No eligible complete assessment snapshots found for investigation {investigation_id}")
 
-        if len(scans) < 2:
-            raise ValueError(
-                f"At least two ScanRuns are required for monitoring comparison (found {len(scans)})"
-            )
+        if len(eligible) == 1:
+            # Single baseline established
+            snap = eligible[0]
+            if current_scan_run_id and current_scan_run_id != snap.id:
+                c = db.get(ScanRun, current_scan_run_id)
+                if c and not self.is_eligible_snapshot(c):
+                    op = (c.summary or {}).get("operation") or (c.summary or {}).get("source") or "operation_specific"
+                    raise ValueError(f"ScanRun #{c.run_number} is an operation-specific run ({op}) and is not an eligible snapshot.")
+            if baseline_scan_run_id and baseline_scan_run_id != snap.id:
+                b = db.get(ScanRun, baseline_scan_run_id)
+                if b and not self.is_eligible_snapshot(b):
+                    op = (b.summary or {}).get("operation") or (b.summary or {}).get("source") or "operation_specific"
+                    raise ValueError(f"ScanRun #{b.run_number} is an operation-specific run ({op}) and is not an eligible snapshot.")
+            return snap, snap, True
 
         if current_scan_run_id:
             curr = db.get(ScanRun, current_scan_run_id)
             if not curr or curr.investigation_id != investigation_id:
                 raise ValueError("Current ScanRun does not belong to this investigation")
-            # Baseline is previous scan run in run_number order
-            idx = next((i for i, s in enumerate(scans) if s.id == curr.id), None)
+            if not self.is_eligible_snapshot(curr):
+                op = (curr.summary or {}).get("operation") or (curr.summary or {}).get("source") or "operation_specific"
+                raise ValueError(f"ScanRun #{curr.run_number} is an operation-specific run ({op}) and is not an eligible snapshot.")
+            idx = next((i for i, s in enumerate(eligible) if s.id == curr.id), None)
             if idx is None or idx == 0:
-                raise ValueError("No prior baseline ScanRun exists before the specified current scan")
-            base = scans[idx - 1]
-            return base, curr
+                # First snapshot
+                return curr, curr, True
+            base = eligible[idx - 1]
+            return base, curr, False
 
         if baseline_scan_run_id:
             base = db.get(ScanRun, baseline_scan_run_id)
             if not base or base.investigation_id != investigation_id:
                 raise ValueError("Baseline ScanRun does not belong to this investigation")
-            curr = scans[-1]
-            if base.id == curr.id and len(scans) >= 2:
-                # If baseline is the latest, compare with previous
-                idx = next((i for i, s in enumerate(scans) if s.id == base.id), -1)
+            if not self.is_eligible_snapshot(base):
+                op = (base.summary or {}).get("operation") or (base.summary or {}).get("source") or "operation_specific"
+                raise ValueError(f"ScanRun #{base.run_number} is an operation-specific run ({op}) and is not an eligible snapshot.")
+            curr = eligible[-1]
+            if base.id == curr.id and len(eligible) >= 2:
+                idx = next((i for i, s in enumerate(eligible) if s.id == base.id), -1)
                 if idx > 0:
-                    curr = base
-                    base = scans[idx - 1]
-            return base, curr
+                    return eligible[idx - 1], base, False
+                else:
+                    return base, base, True
+            return base, curr, False
 
-        # Both omitted: default to previous scan vs latest scan
-        return scans[-2], scans[-1]
+        # Both omitted: default to previous snapshot vs latest snapshot
+        return eligible[-2], eligible[-1], False
 
     def _record_change(
         self,

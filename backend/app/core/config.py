@@ -69,6 +69,13 @@ class Settings(BaseSettings):
     CT_FALLBACK_ENABLED: bool = True
     CT_PROVIDER_TIMEOUT_SECONDS: float = 15.0
 
+    # Active DNS Intelligence & Reachability Configuration
+    DNS_MAX_CONCURRENCY: int = 25
+    DNS_QUERY_TIMEOUT: float = 1.5
+    DNS_LIFETIME_TIMEOUT: float = 2.0
+    DNS_REACHABILITY_TIMEOUT: float = 2.5
+    DNS_RECORD_TYPES: List[str] = ["A", "AAAA", "CNAME", "MX", "NS", "TXT"]
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

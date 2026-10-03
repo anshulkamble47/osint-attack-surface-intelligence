@@ -144,6 +144,10 @@ export interface DNSReachabilityResponse {
   unreachable: number;
   dns_records_discovered: number;
   services_discovered: number;
+  status?: string;
+  warnings_count?: number;
+  timeouts_count?: number;
+  no_nameservers_count?: number;
   results: CandidateResolutionDetail[];
   completed_at: string;
   note: string;
@@ -199,6 +203,7 @@ export interface IPEnrichmentDetail {
 export interface IPEnrichmentResponse {
   investigation_id: string;
   scan_run_id: string;
+  status?: string;
   target_domain: string;
   ips_processed: number;
   public_ips: number;
@@ -206,6 +211,7 @@ export interface IPEnrichmentResponse {
   asn_success: number;
   rdap_success: number;
   failed: number;
+  warnings_count?: number;
   results: IPEnrichmentDetail[];
   completed_at: string;
   note: string;
@@ -284,12 +290,16 @@ export interface ServiceFingerprintDetail {
 export interface FingerprintResponse {
   investigation_id: string;
   scan_run_id: string;
+  status?: string;
   target_domain: string;
   services_processed: number;
   reachable: number;
   technologies_detected: number;
   security_headers_analyzed: number;
   tls_observations: number;
+  timeouts_count?: number;
+  ssrf_skips_count?: number;
+  warnings_count?: number;
   results: ServiceFingerprintDetail[];
   completed_at: string;
   note: string;
@@ -438,6 +448,10 @@ export interface FindingResponse {
   remediation?: string | null;
   recommendation: string;
   is_verified: boolean;
+  correlation_status?: string | null;
+  verification_status?: string | null;
+  match_basis?: string | null;
+  is_version_supported?: boolean | null;
   asset?: FindingAssetSummary | null;
   technology?: FindingTechnologySummary | null;
   vulnerability?: FindingVulnerabilitySummary | null;
@@ -521,6 +535,25 @@ export interface ChangeListResponse {
   changes_by_category: Record<string, number>;
   changes: ChangeRecordResponse[];
 }
+
+export interface SnapshotSummaryResponse {
+  id: string;
+  investigation_id: string;
+  run_number: number;
+  status: string;
+  is_snapshot: boolean;
+  coverage: string;
+  summary: Record<string, any>;
+  started_at: string;
+  completed_at?: string | null;
+}
+
+export interface SnapshotListResponse {
+  investigation_id: string;
+  total_snapshots: number;
+  snapshots: SnapshotSummaryResponse[];
+}
+
 
 
 

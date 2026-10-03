@@ -1004,7 +1004,37 @@ def test_idor_and_rbac_protection(dual_scan_investigation_fixture):
 
 
 def test_insufficient_scans_for_automatic_comparison():
-    """Test when an investigation has only 1 scan run, auto-comparison returns clear 400 error."""
+    """Test when an investigation has 0 eligible scans, auto-comparison returns clear 400 error."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Zero Scan Corp", primary_domain="zeroscan.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-ZERO-{uuid.uuid4().hex[:6].upper()}",
+            title="Zero Scan Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.commit()
+        db.refresh(inv)
+        inv_id = inv.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    response = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={},
+        headers=headers,
+    )
+    assert response.status_code == 400
+    assert "No eligible complete assessment snapshots found" in response.json()["detail"]
+
+
+def test_single_complete_snapshot_baseline_established():
+    """Test when an investigation has 1 complete snapshot, auto-comparison returns Baseline Established semantics (200 OK)."""
     with TestingSessionLocal() as db:
         analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
         target = Target(name="Single Scan Corp", primary_domain="singlescan.local", is_authorized=True)
@@ -1021,7 +1051,12 @@ def test_insufficient_scans_for_automatic_comparison():
         db.add(inv)
         db.flush()
 
-        scan1 = ScanRun(investigation_id=inv.id, run_number=1, status="completed")
+        scan1 = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
         db.add(scan1)
         db.commit()
         db.refresh(inv)
@@ -1033,8 +1068,11 @@ def test_insufficient_scans_for_automatic_comparison():
         json={},
         headers=headers,
     )
-    assert response.status_code == 400
-    assert "At least two ScanRuns are required" in response.json()["detail"]
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_changes"] == 0
+    assert "Baseline Established — No Prior Snapshot for Diffing" in data["message"]
+
 
 
 def test_auto_compare_latest_two_scans(dual_scan_investigation_fixture):
@@ -1348,4 +1386,458 @@ def test_changes_pagination_offset_limit(dual_scan_investigation_fixture):
     p1_ids = {c["id"] for c in p1_data["changes"]}
     p2_ids = {c["id"] for c in p2_data["changes"]}
     assert len(p1_ids.intersection(p2_ids)) == 0
+
+
+# =============================================================================
+# REGRESSION TEST SUITE: ATTACK SURFACE SNAPSHOT ELIGIBILITY & MONITORING
+# =============================================================================
+
+def test_operation_specific_scanruns_not_eligible_snapshots():
+    """Test A: Operation-specific ScanRuns are not eligible monitoring snapshots."""
+    service = ChangeDetectionService()
+    
+    disqualified_ops = [
+        "ct_discovery",
+        "dns_reachability_resolution",
+        "dns_reachability_probe",
+        "ip_enrichment_rdap_asn",
+        "ip_enrichment",
+        "technology_fingerprinting_http_security",
+        "technology_fingerprinting",
+        "vulnerability_intelligence_cve_correlation",
+        "vulnerability_correlation",
+        "findings_generation",
+        "graph_generation",
+    ]
+    for op in disqualified_ops:
+        scan = ScanRun(
+            investigation_id=uuid.uuid4(),
+            run_number=1,
+            status="completed",
+            summary={"operation": op},
+        )
+        assert service.is_eligible_snapshot(scan) is False, f"Operation '{op}' should not be an eligible snapshot"
+
+    # Eligible cases
+    complete_snap = ScanRun(
+        investigation_id=uuid.uuid4(),
+        run_number=2,
+        status="completed",
+        summary={"operation": "complete_assessment", "is_snapshot": True},
+    )
+    assert service.is_eligible_snapshot(complete_snap) is True
+
+    generic_scan = ScanRun(
+        investigation_id=uuid.uuid4(),
+        run_number=3,
+        status="completed",
+        summary={},
+    )
+    assert service.is_eligible_snapshot(generic_scan) is True
+
+
+def test_cve_correlation_scanrun_cannot_be_selected_as_baseline_or_current():
+    """Test B: CVE correlation ScanRun cannot be selected as a monitoring baseline or current snapshot."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="CVE Corp", primary_domain="cve-test.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-CVE-{uuid.uuid4().hex[:6].upper()}",
+            title="CVE Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        snap1 = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
+        cve_scan = ScanRun(
+            investigation_id=inv.id,
+            run_number=2,
+            status="completed",
+            summary={"operation": "vulnerability_intelligence_cve_correlation"},
+        )
+        db.add_all([snap1, cve_scan])
+        db.commit()
+        inv_id = inv.id
+        snap1_id = snap1.id
+        cve_scan_id = cve_scan.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+
+    # Current as CVE run
+    res1 = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={"baseline_scan_run_id": str(snap1_id), "current_scan_run_id": str(cve_scan_id)},
+        headers=headers,
+    )
+    assert res1.status_code == 400
+    assert "operation-specific run" in res1.json()["detail"]
+
+    # Baseline as CVE run
+    res2 = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={"baseline_scan_run_id": str(cve_scan_id), "current_scan_run_id": str(snap1_id)},
+        headers=headers,
+    )
+    assert res2.status_code == 400
+    assert "operation-specific run" in res2.json()["detail"]
+
+
+def test_dns_only_scanrun_cannot_be_compared_against_cve_only():
+    """Test C: DNS-only ScanRun cannot be compared against CVE-only ScanRun."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="DNS-CVE Corp", primary_domain="dnscve.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-DC-{uuid.uuid4().hex[:6].upper()}",
+            title="DNS CVE Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        dns_scan = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "dns_reachability_resolution"},
+        )
+        cve_scan = ScanRun(
+            investigation_id=inv.id,
+            run_number=2,
+            status="completed",
+            summary={"operation": "vulnerability_intelligence_cve_correlation"},
+        )
+        db.add_all([dns_scan, cve_scan])
+        db.commit()
+        inv_id = inv.id
+        dns_scan_id = dns_scan.id
+        cve_scan_id = cve_scan.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    res = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={"baseline_scan_run_id": str(dns_scan_id), "current_scan_run_id": str(cve_scan_id)},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert "operation-specific run" in res.json()["detail"]
+
+
+def test_ip_enrichment_cannot_be_compared_against_cve_correlation():
+    """Test D: IP enrichment ScanRun (e.g. #21) cannot be compared against CVE correlation (#22)."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Netflix Case Corp", primary_domain="netflix-case.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-NF-{uuid.uuid4().hex[:6].upper()}",
+            title="Netflix Bug Reproduction Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        # Scan 21: IP enrichment
+        scan21 = ScanRun(
+            investigation_id=inv.id,
+            run_number=21,
+            status="completed",
+            summary={"operation": "ip_enrichment_rdap_asn", "source": "ip_enrichment"},
+        )
+        # Scan 22: CVE correlation
+        scan22 = ScanRun(
+            investigation_id=inv.id,
+            run_number=22,
+            status="completed",
+            summary={"operation": "vulnerability_intelligence_cve_correlation"},
+        )
+        db.add_all([scan21, scan22])
+        db.commit()
+        inv_id = inv.id
+        scan21_id = scan21.id
+        scan22_id = scan22.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    res = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={"baseline_scan_run_id": str(scan21_id), "current_scan_run_id": str(scan22_id)},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert "operation-specific run" in res.json()["detail"]
+
+
+def test_one_complete_snapshot_first_snapshot_semantics():
+    """Test E: One complete snapshot produces Baseline Established semantics with 0 false changes."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Baseline Corp", primary_domain="baseline-corp.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-BASE-{uuid.uuid4().hex[:6].upper()}",
+            title="Baseline Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        snap1 = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
+        db.add(snap1)
+        db.commit()
+        inv_id = inv.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    res = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_changes"] == 0
+    assert data["added_count"] == 0
+    assert data["removed_count"] == 0
+    assert data["modified_count"] == 0
+    assert "Baseline Established — No Prior Snapshot for Diffing" in data["message"]
+
+
+def test_two_complete_snapshots_comparison():
+    """Test F & G: Two complete snapshots can be compared and produce ADDED, REMOVED, MODIFIED correctly."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Snap Corp", primary_domain="snap-corp.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-SNAP-{uuid.uuid4().hex[:6].upper()}",
+            title="Snap Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        snap1 = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
+        snap2 = ScanRun(
+            investigation_id=inv.id,
+            run_number=2,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
+        db.add_all([snap1, snap2])
+        db.flush()
+
+        # Root Domain
+        dom_asset = Asset(target_id=target.id, investigation_id=inv.id, asset_type="domain", value="snap-corp.local", source="ct_log")
+        db.add(dom_asset)
+        db.flush()
+        domain = Domain(asset_id=dom_asset.id, domain_name="snap-corp.local")
+        db.add(domain)
+        db.flush()
+
+        # Asset 1 in Snap 1 (removed in Snap 2)
+        a1 = Asset(target_id=target.id, investigation_id=inv.id, last_scan_run_id=snap1.id, asset_type="subdomain", value="old.snap-corp.local", source="ct_log")
+        # Asset 2 in Snap 2 (added in Snap 2)
+        a2 = Asset(target_id=target.id, investigation_id=inv.id, last_scan_run_id=snap2.id, asset_type="subdomain", value="new.snap-corp.local", source="ct_log")
+        db.add_all([a1, a2])
+        db.flush()
+
+        db.add(Subdomain(asset_id=a1.id, domain_id=domain.id, subdomain_name="old.snap-corp.local"))
+        db.add(Subdomain(asset_id=a2.id, domain_id=domain.id, subdomain_name="new.snap-corp.local"))
+        db.commit()
+        inv_id = inv.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    res = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_changes"] == 2
+    assert data["added_count"] == 1
+    assert data["removed_count"] == 1
+
+
+def test_missing_observations_from_operation_run_do_not_create_false_removals():
+    """Test H: Missing observations from an operation-specific run do NOT create false REMOVED records."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="No False Corp", primary_domain="nofalse.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-NOF-{uuid.uuid4().hex[:6].upper()}",
+            title="No False Inv",
+            target_id=target.id,
+            created_by_id=analyst_id,
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        # Baseline Snapshot 1: Has Domain + Service
+        snap1 = ScanRun(
+            investigation_id=inv.id,
+            run_number=1,
+            status="completed",
+            summary={"operation": "complete_assessment", "is_snapshot": True},
+        )
+        db.add(snap1)
+        db.flush()
+
+        dom_asset = Asset(
+            target_id=target.id,
+            investigation_id=inv.id,
+            last_scan_run_id=snap1.id,
+            asset_type="domain",
+            value="nofalse.local",
+            source="ct_log",
+        )
+        db.add(dom_asset)
+        db.flush()
+
+        svc = ServiceExposure(
+            asset_id=dom_asset.id,
+            scan_run_id=snap1.id,
+            port=443,
+            protocol="tcp",
+            service_name="https",
+        )
+        db.add(svc)
+
+        # Later Operation Run: CVE correlation only
+        cve_run = ScanRun(
+            investigation_id=inv.id,
+            run_number=2,
+            status="completed",
+            summary={"operation": "vulnerability_intelligence_cve_correlation"},
+        )
+        db.add(cve_run)
+        db.commit()
+        inv_id = inv.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+
+    # Auto-comparison ignores the CVE operation run and sees only Snap 1 as baseline
+    res = client.post(
+        f"/api/investigations/{inv_id}/monitoring/compare",
+        json={},
+        headers=headers,
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total_changes"] == 0
+    assert data["removed_count"] == 0
+    assert "Baseline Established" in data["message"]
+
+
+def test_snapshot_comparison_requires_same_investigation_scope():
+    """Test I: Snapshot comparison rejects scans from different investigations."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Scope Corp", primary_domain="scope.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv1 = Investigation(reference_code=f"INV-S1-{uuid.uuid4().hex[:6]}", title="Scope Inv 1", target_id=target.id, created_by_id=analyst_id, status="active")
+        inv2 = Investigation(reference_code=f"INV-S2-{uuid.uuid4().hex[:6]}", title="Scope Inv 2", target_id=target.id, created_by_id=analyst_id, status="active")
+        db.add_all([inv1, inv2])
+        db.flush()
+
+        snap1 = ScanRun(investigation_id=inv1.id, run_number=1, status="completed", summary={"is_snapshot": True})
+        snap2 = ScanRun(investigation_id=inv2.id, run_number=1, status="completed", summary={"is_snapshot": True})
+        db.add_all([snap1, snap2])
+        db.commit()
+        inv1_id = inv1.id
+        snap1_id = snap1.id
+        snap2_id = snap2.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+    res = client.post(
+        f"/api/investigations/{inv1_id}/monitoring/compare",
+        json={"baseline_scan_run_id": str(snap1_id), "current_scan_run_id": str(snap2_id)},
+        headers=headers,
+    )
+    assert res.status_code == 400
+    assert "does not belong to this investigation" in res.json()["detail"]
+
+
+def test_snapshot_capture_and_listing_api():
+    """Test J: Capture Assessment Snapshot and List Snapshots API endpoints."""
+    with TestingSessionLocal() as db:
+        analyst_id = uuid.UUID("91111111-1111-1111-1111-111111111111")
+        target = Target(name="Snap API Corp", primary_domain="snapapi.local", is_authorized=True)
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(reference_code=f"INV-API-{uuid.uuid4().hex[:6]}", title="Snap API Inv", target_id=target.id, created_by_id=analyst_id, status="active")
+        db.add(inv)
+        db.flush()
+
+        dom_asset = Asset(target_id=target.id, investigation_id=inv.id, asset_type="domain", value="snapapi.local", source="ct_log", is_active=True)
+        db.add(dom_asset)
+        db.commit()
+        inv_id = inv.id
+
+    headers = get_auth_headers(analyst_id, "analyst_9a", "analyst")
+
+    # 1. Capture snapshot 1
+    post_res1 = client.post(f"/api/investigations/{inv_id}/snapshots", headers=headers)
+    assert post_res1.status_code == 200
+    snap1_data = post_res1.json()
+    assert snap1_data["is_snapshot"] is True
+    assert snap1_data["coverage"] == "Complete Attack Surface"
+
+    # 2. Capture snapshot 2
+    post_res2 = client.post(f"/api/investigations/{inv_id}/snapshots", headers=headers)
+    assert post_res2.status_code == 200
+    snap2_data = post_res2.json()
+    assert snap2_data["run_number"] == 2
+
+    # 3. List snapshots
+    list_res = client.get(f"/api/investigations/{inv_id}/snapshots", headers=headers)
+    assert list_res.status_code == 200
+    list_data = list_res.json()
+    assert list_data["total_snapshots"] == 2
+    assert len(list_data["snapshots"]) == 2
+
 

@@ -1,5 +1,6 @@
 """ASN (Autonomous System Number) intelligence service and provider abstraction."""
 
+import threading
 import ipaddress
 import re
 from abc import ABC, abstractmethod
@@ -41,9 +42,11 @@ class CymruDNSASNProvider(BaseASNProvider):
     - AS Name: AS<asn>.asn.cymru.com
     """
 
-    def __init__(self, timeout: float = 2.0, lifetime: float = 2.5):
+    def __init__(self, timeout: float = 1.5, lifetime: float = 2.0):
         self.timeout = timeout
         self.lifetime = lifetime
+        self._asn_name_cache: Dict[int, Optional[str]] = {}
+        self._cache_lock = threading.Lock()
 
     def _get_resolver(self) -> dns.resolver.Resolver:
         resolver = dns.resolver.Resolver()
@@ -58,7 +61,12 @@ class CymruDNSASNProvider(BaseASNProvider):
         return f"{reversed_nibbles}.origin6.asn.cymru.com"
 
     def _lookup_as_name(self, asn: int, resolver: dns.resolver.Resolver) -> Optional[str]:
-        """Query AS<asn>.asn.cymru.com for the organization name."""
+        """Query AS<asn>.asn.cymru.com for the organization name with caching."""
+        with self._cache_lock:
+            if asn in self._asn_name_cache:
+                return self._asn_name_cache[asn]
+
+        name = None
         try:
             as_query = f"AS{asn}.asn.cymru.com"
             answers = resolver.resolve(as_query, "TXT")
@@ -67,12 +75,18 @@ class CymruDNSASNProvider(BaseASNProvider):
                 txt = b"".join(rdata.strings).decode("utf-8", errors="replace")
                 parts = [p.strip() for p in txt.split("|")]
                 if len(parts) >= 5:
-                    return parts[4].strip()
+                    name = parts[4].strip()
+                    break
                 elif len(parts) >= 1:
-                    return parts[-1].strip()
+                    name = parts[-1].strip()
+                    break
         except Exception:
             pass
-        return None
+
+        with self._cache_lock:
+            self._asn_name_cache[asn] = name
+
+        return name
 
     def lookup(self, ip: str) -> Optional[ASNInfo]:
         """Perform DNS TXT query to retrieve ASN information for an IP."""

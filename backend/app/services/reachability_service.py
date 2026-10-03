@@ -4,12 +4,14 @@ import ipaddress
 import re
 import time
 import urllib.parse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict, Any, Union, Tuple
 import dns.resolver
 import httpx
 
+from backend.app.core.config import settings
 from backend.app.core.logging import logger
 
 TITLE_REGEX = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
@@ -62,10 +64,11 @@ class ReachabilityService:
     """
     Lightweight, SSRF-safe reachability probing service.
     Verifies HTTP (port 80) and HTTPS (port 443) exposure for resolving hostnames.
-    Includes strict pre-flight SSRF IP validation, safe redirect inspection, and bounded response streaming.
+    Includes strict pre-flight SSRF IP validation, safe redirect inspection, bounded response streaming,
+    and controlled concurrency.
     """
 
-    DEFAULT_TIMEOUT_SECONDS = 3.0
+    DEFAULT_TIMEOUT_SECONDS = settings.DNS_REACHABILITY_TIMEOUT
     DEFAULT_MAX_REDIRECTS = 3
     MAX_BODY_BYTES = 65536  # 64 KB maximum response body read limit
     USER_AGENT = "Mozilla/5.0 (compatible; AttackSurfaceOSINT/1.0; +https://github.com/osint-platform)"
@@ -73,11 +76,11 @@ class ReachabilityService:
     def __init__(
         self,
         client: Optional[httpx.Client] = None,
-        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+        timeout: Optional[float] = None,
         max_redirects: int = DEFAULT_MAX_REDIRECTS,
     ):
         self._client = client
-        self._timeout = timeout
+        self._timeout = timeout if timeout is not None else self.DEFAULT_TIMEOUT_SECONDS
         self._max_redirects = max_redirects
 
     def probe_hostname(
@@ -133,6 +136,58 @@ class ReachabilityService:
 
         return results
 
+    def probe_batch(
+        self,
+        items: List[Tuple[str, Optional[List[str]]]],
+        max_concurrency: Optional[int] = None,
+    ) -> Dict[str, List[ReachabilityProbeResult]]:
+        """
+        Concurrently probe reachability for multiple resolving hostnames.
+        
+        items: List of (hostname, resolved_ips) tuples.
+        """
+        if not items:
+            return {}
+
+        concurrency = max_concurrency or settings.DNS_MAX_CONCURRENCY
+        concurrency = max(1, min(concurrency, len(items)))
+
+        results: Dict[str, List[ReachabilityProbeResult]] = {}
+
+        with ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix="probe-worker") as executor:
+            future_to_host = {
+                executor.submit(self.probe_hostname, host, ips): host
+                for host, ips in items
+            }
+
+            for future in as_completed(future_to_host):
+                host = future_to_host[future]
+                try:
+                    res = future.result()
+                    results[host] = res
+                except Exception as exc:
+                    logger.error(f"Worker exception probing '{host}': {exc}")
+                    results[host] = [
+                        ReachabilityProbeResult(
+                            url=f"https://{host}",
+                            port=443,
+                            protocol="tcp",
+                            service_name="https",
+                            is_reachable=False,
+                            error=str(exc),
+                        ),
+                        ReachabilityProbeResult(
+                            url=f"http://{host}",
+                            port=80,
+                            protocol="tcp",
+                            service_name="http",
+                            is_reachable=False,
+                            error=str(exc),
+                        ),
+                    ]
+
+        return results
+
     def _probe_url(
         self,
         target_url: str,
@@ -177,7 +232,7 @@ class ReachabilityService:
                         timeout=self._timeout,
                         follow_redirects=False,
                     )
-                    status_code = resp.status_code
+                    status_code = resp.status_code if isinstance(resp.status_code, int) else 200
                     last_status_code = status_code
                     last_final_url = str(resp.url) if hasattr(resp, "url") and resp.url else current_url
 
@@ -314,8 +369,8 @@ class ReachabilityService:
             # 2. If host is a hostname, resolve to check for private IPs
             try:
                 resolver = dns.resolver.Resolver()
-                resolver.timeout = 1.5
-                resolver.lifetime = 1.5
+                resolver.timeout = 1.0
+                resolver.lifetime = 1.0
                 for rtype in ("A", "AAAA"):
                     try:
                         answers = resolver.resolve(host, rtype)
@@ -323,7 +378,7 @@ class ReachabilityService:
                             ip_str = str(rdata).strip()
                             if not is_public_ip(ip_str):
                                 return False
-                    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN):
+                    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.resolver.NoNameservers, dns.resolver.Timeout):
                         continue
                     except Exception:
                         pass
@@ -333,7 +388,6 @@ class ReachabilityService:
 
         except Exception:
             return False
-
 
     @staticmethod
     def _extract_title(html_content: Optional[str]) -> Optional[str]:
@@ -348,4 +402,3 @@ class ReachabilityService:
             title = re.sub(r"\s+", " ", title)
             return title[:200] if title else None
         return None
-

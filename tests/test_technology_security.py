@@ -1179,3 +1179,483 @@ def test_38_fingerprint_invalid_investigation_id():
     fake_id = uuid.uuid4()
     resp = client.post(f"/api/investigations/{fake_id}/fingerprint", headers=headers)
     assert resp.status_code == 404
+
+
+def test_39_bounded_concurrent_fingerprinting_multiple_hosts():
+    """Test 39: Bounded concurrent fingerprinting across multiple distinct subdomains."""
+    with TestingSessionLocal() as db:
+        target = Target(name="Concurrent Test Target", primary_domain="concurrent-test.com")
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-CONC-{uuid.uuid4().hex[:6]}",
+            title="Concurrent Fingerprint Inv",
+            target_id=target.id,
+            created_by_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        domain_asset = Asset(
+            target_id=target.id,
+            investigation_id=inv.id,
+            asset_type="domain",
+            value="concurrent-test.com",
+            is_active=True,
+            source="target_scope",
+        )
+        db.add(domain_asset)
+        db.flush()
+
+        domain_rec = Domain(asset_id=domain_asset.id, domain_name="concurrent-test.com")
+        db.add(domain_rec)
+        db.flush()
+
+        # Create 5 subdomains
+        hostnames = [f"node{i}.concurrent-test.com" for i in range(1, 6)]
+        for h in hostnames:
+            asset = Asset(
+                target_id=target.id,
+                investigation_id=inv.id,
+                asset_type="subdomain",
+                value=h,
+                is_active=True,
+                source="test",
+            )
+            db.add(asset)
+            db.flush()
+            sub = Subdomain(
+                asset_id=asset.id,
+                domain_id=domain_rec.id,
+                subdomain_name=h,
+                is_resolving=True,
+            )
+            db.add(sub)
+            db.flush()
+            dns_rec = DNSRecord(
+                subdomain_id=sub.id,
+                record_type="A",
+                value="93.184.216.34",
+                resolver="test_resolver",
+            )
+            db.add(dns_rec)
+        db.commit()
+        inv_id = inv.id
+
+    def mock_probe(hostname, port, protocol, service_name, resolved_ips=None):
+        return HTTPProbeObservation(
+            url=f"{service_name}://{hostname}:{port}",
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            is_reachable=True,
+            status_code=200,
+            page_title=f"Title for {hostname}",
+            server_header="Apache/2.4.52 (Ubuntu)",
+            headers={"server": "Apache/2.4.52 (Ubuntu)"},
+            body_snippet=f"<html><title>Title for {hostname}</title></html>",
+            security_headers=HTTPIntelligenceService.analyze_security_headers({"server": "Apache/2.4.52"}, is_https=(service_name == "https")),
+            tls_metadata=TLSMetadata(tls_version="TLSv1.3", cipher_suite="TLS_AES_256_GCM_SHA384") if service_name == "https" else None,
+        )
+
+    mock_http_svc = MagicMock()
+    mock_http_svc.probe_service.side_effect = mock_probe
+
+    app.dependency_overrides[get_http_intelligence_service] = lambda: mock_http_svc
+
+    try:
+        headers = get_auth_headers("analyst_one")
+        resp = client.post(f"/api/investigations/{inv_id}/fingerprint", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert data["services_processed"] == 12  # 1 domain + 5 subdomains = 6 hosts * 2 ports = 12
+        assert data["reachable"] == 12
+        assert data["technologies_detected"] >= 12
+        assert data["tls_observations"] == 6
+        assert data["timeouts_count"] == 0
+        assert data["ssrf_skips_count"] == 0
+        assert data["warnings_count"] == 0
+        assert len(data["results"]) == 12
+    finally:
+        app.dependency_overrides.pop(get_http_intelligence_service, None)
+
+
+def test_40_http_and_tls_timeout_resilience_and_scanrun_warning_semantics():
+    """Test 40: Unresponsive hosts timing out in HTTP/TLS result in completed_with_warnings without failing stage."""
+    with TestingSessionLocal() as db:
+        target = Target(name="Timeout Test Target", primary_domain="timeout-test.com")
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-TO-{uuid.uuid4().hex[:6]}",
+            title="Timeout Inv",
+            target_id=target.id,
+            created_by_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        domain_asset = Asset(
+            target_id=target.id,
+            investigation_id=inv.id,
+            asset_type="domain",
+            value="timeout-test.com",
+            is_active=True,
+            source="target_scope",
+        )
+        db.add(domain_asset)
+        db.flush()
+
+        domain_rec = Domain(asset_id=domain_asset.id, domain_name="timeout-test.com")
+        db.add(domain_rec)
+        db.flush()
+
+        # 1 responsive host, 1 timeout host
+        for h in ["good.timeout-test.com", "dead.timeout-test.com"]:
+            asset = Asset(
+                target_id=target.id,
+                investigation_id=inv.id,
+                asset_type="subdomain",
+                value=h,
+                is_active=True,
+                source="test",
+            )
+            db.add(asset)
+            db.flush()
+            sub = Subdomain(
+                asset_id=asset.id,
+                domain_id=domain_rec.id,
+                subdomain_name=h,
+                is_resolving=True,
+            )
+            db.add(sub)
+            db.flush()
+            dns_rec = DNSRecord(
+                subdomain_id=sub.id,
+                record_type="A",
+                value="93.184.216.34",
+                resolver="test_resolver",
+            )
+            db.add(dns_rec)
+        db.commit()
+        inv_id = inv.id
+
+    def mock_probe(hostname, port, protocol, service_name, resolved_ips=None):
+        if "dead" in hostname:
+            return HTTPProbeObservation(
+                url=f"{service_name}://{hostname}:{port}",
+                port=port,
+                protocol=protocol,
+                service_name=service_name,
+                is_reachable=False,
+                error="Connection timed out after 2.0s",
+            )
+        return HTTPProbeObservation(
+            url=f"{service_name}://{hostname}:{port}",
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            is_reachable=True,
+            status_code=200,
+            page_title="Good Host",
+            server_header="nginx/1.22",
+            headers={"server": "nginx/1.22"},
+            security_headers=HTTPIntelligenceService.analyze_security_headers({"server": "nginx/1.22"}, is_https=(service_name == "https")),
+            tls_metadata=TLSMetadata(tls_version="TLSv1.3") if service_name == "https" else None,
+        )
+
+    mock_http_svc = MagicMock()
+    mock_http_svc.probe_service.side_effect = mock_probe
+
+    app.dependency_overrides[get_http_intelligence_service] = lambda: mock_http_svc
+
+    try:
+        headers = get_auth_headers("analyst_one")
+        resp = client.post(f"/api/investigations/{inv_id}/fingerprint", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "completed_with_warnings"
+        # 3 hosts (domain + 2 subdomains) * 2 ports = 6 services processed
+        assert data["services_processed"] == 6
+        assert data["reachable"] == 4  # domain (2) + good (2)
+        assert data["timeouts_count"] == 2  # dead (2)
+        assert data["warnings_count"] == 2
+        assert len(data["results"]) == 4  # Only reachable services persisted
+    finally:
+        app.dependency_overrides.pop(get_http_intelligence_service, None)
+
+
+def test_41_duplicate_host_deduplication_within_scanrun():
+    """Test 41: Duplicate assets with same hostname only trigger one probe execution per port."""
+    with TestingSessionLocal() as db:
+        target = Target(name="Dedup Target", primary_domain="dedup-test.com")
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-DEDUP-{uuid.uuid4().hex[:6]}",
+            title="Dedup Inv",
+            target_id=target.id,
+            created_by_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        domain_asset = Asset(
+            target_id=target.id,
+            investigation_id=inv.id,
+            asset_type="domain",
+            value="dedup-test.com",
+            is_active=True,
+            source="target_scope",
+        )
+        db.add(domain_asset)
+        db.flush()
+
+        domain_rec = Domain(asset_id=domain_asset.id, domain_name="dedup-test.com")
+        db.add(domain_rec)
+        db.flush()
+
+        # Two assets pointing to the same hostname 'shared.dedup-test.com'
+        for _ in range(2):
+            asset = Asset(
+                target_id=target.id,
+                investigation_id=inv.id,
+                asset_type="subdomain",
+                value="shared.dedup-test.com",
+                is_active=True,
+                source="test",
+            )
+            db.add(asset)
+            db.flush()
+            sub = Subdomain(
+                asset_id=asset.id,
+                domain_id=domain_rec.id,
+                subdomain_name="shared.dedup-test.com",
+                is_resolving=True,
+            )
+            db.add(sub)
+            db.flush()
+            dns_rec = DNSRecord(
+                subdomain_id=sub.id,
+                record_type="A",
+                value="93.184.216.34",
+                resolver="test_resolver",
+            )
+            db.add(dns_rec)
+        db.commit()
+        inv_id = inv.id
+
+    probe_calls = []
+
+    def mock_probe(hostname, port, protocol, service_name, resolved_ips=None):
+        probe_calls.append((hostname, port))
+        return HTTPProbeObservation(
+            url=f"{service_name}://{hostname}:{port}",
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            is_reachable=True,
+            status_code=200,
+            page_title="Dedup Host",
+            server_header="cloudflare",
+            headers={"server": "cloudflare"},
+            security_headers=HTTPIntelligenceService.analyze_security_headers({"server": "cloudflare"}, is_https=(service_name == "https")),
+            tls_metadata=TLSMetadata(tls_version="TLSv1.3") if service_name == "https" else None,
+        )
+
+    mock_http_svc = MagicMock()
+    mock_http_svc.probe_service.side_effect = mock_probe
+
+    app.dependency_overrides[get_http_intelligence_service] = lambda: mock_http_svc
+
+    try:
+        headers = get_auth_headers("analyst_one")
+        resp = client.post(f"/api/investigations/{inv_id}/fingerprint", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "completed"
+        # Unique hosts: dedup-test.com (2 ports) and shared.dedup-test.com (2 ports) = 4 probes total
+        # The duplicate shared.dedup-test.com asset was not probed a second time
+        assert len(probe_calls) == 4
+        assert sorted(probe_calls) == [
+            ("dedup-test.com", 80),
+            ("dedup-test.com", 443),
+            ("shared.dedup-test.com", 80),
+            ("shared.dedup-test.com", 443),
+        ]
+        # Results detail map to all 3 assets (6 service exposures)
+        assert data["services_processed"] == 6
+        assert data["reachable"] == 6
+    finally:
+        app.dependency_overrides.pop(get_http_intelligence_service, None)
+
+
+def test_42_ssrf_private_ip_skips_not_treated_as_failures():
+    """Test 42: SSRF skips on private/reserved IPs increment ssrf_skips_count without causing completed_with_warnings status."""
+    with TestingSessionLocal() as db:
+        target = Target(name="SSRF Skip Target", primary_domain="ssrf-skip-test.com")
+        db.add(target)
+        db.flush()
+
+        inv = Investigation(
+            reference_code=f"INV-SSRF-{uuid.uuid4().hex[:6]}",
+            title="SSRF Skip Inv",
+            target_id=target.id,
+            created_by_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+            status="active",
+        )
+        db.add(inv)
+        db.flush()
+
+        domain_asset = Asset(
+            target_id=target.id,
+            investigation_id=inv.id,
+            asset_type="domain",
+            value="ssrf-skip-test.com",
+            is_active=True,
+            source="target_scope",
+        )
+        db.add(domain_asset)
+        db.flush()
+
+        domain_rec = Domain(asset_id=domain_asset.id, domain_name="ssrf-skip-test.com")
+        db.add(domain_rec)
+        db.flush()
+
+        # 1 public host, 1 internal host resolving to private IP
+        for h, ip in [("pub.ssrf-skip-test.com", "93.184.216.34"), ("internal.ssrf-skip-test.com", "10.0.0.1")]:
+            asset = Asset(
+                target_id=target.id,
+                investigation_id=inv.id,
+                asset_type="subdomain",
+                value=h,
+                is_active=True,
+                source="test",
+            )
+            db.add(asset)
+            db.flush()
+            sub = Subdomain(
+                asset_id=asset.id,
+                domain_id=domain_rec.id,
+                subdomain_name=h,
+                is_resolving=True,
+            )
+            db.add(sub)
+            db.flush()
+            dns_rec = DNSRecord(
+                subdomain_id=sub.id,
+                record_type="A",
+                value=ip,
+                resolver="test_resolver",
+            )
+            db.add(dns_rec)
+        db.commit()
+        inv_id = inv.id
+
+    def mock_probe(hostname, port, protocol, service_name, resolved_ips=None):
+        if "internal" in hostname:
+            return HTTPProbeObservation(
+                url=f"{service_name}://{hostname}:{port}",
+                port=port,
+                protocol=protocol,
+                service_name=service_name,
+                is_reachable=False,
+                error="SSRF: Hostname 'internal.ssrf-skip-test.com' resolved only to non-public/reserved IPs: ['10.0.0.1']. Probe aborted.",
+            )
+        return HTTPProbeObservation(
+            url=f"{service_name}://{hostname}:{port}",
+            port=port,
+            protocol=protocol,
+            service_name=service_name,
+            is_reachable=True,
+            status_code=200,
+            page_title="Public Host",
+            server_header="nginx",
+            headers={"server": "nginx"},
+            security_headers=HTTPIntelligenceService.analyze_security_headers({"server": "nginx"}, is_https=(service_name == "https")),
+            tls_metadata=TLSMetadata(tls_version="TLSv1.3") if service_name == "https" else None,
+        )
+
+    mock_http_svc = MagicMock()
+    mock_http_svc.probe_service.side_effect = mock_probe
+
+    app.dependency_overrides[get_http_intelligence_service] = lambda: mock_http_svc
+
+    try:
+        headers = get_auth_headers("analyst_one")
+        resp = client.post(f"/api/investigations/{inv_id}/fingerprint", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        # SSRF skips are expected security behaviour -> status remains 'completed' and warnings_count is 0
+        assert data["status"] == "completed"
+        assert data["ssrf_skips_count"] == 2
+        assert data["timeouts_count"] == 0
+        assert data["warnings_count"] == 0
+        assert data["reachable"] == 4  # domain (2) + pub (2)
+    finally:
+        app.dependency_overrides.pop(get_http_intelligence_service, None)
+
+
+def test_43_redirect_ssrf_validation_blocks_internal_hop():
+    """Test 43: Redirect to internal/private IP during HTTP probe is blocked."""
+    mock_resolver = make_mock_resolver({
+        "public-hop.com": {"A": ["93.184.216.34"]},
+        "private-dest.local": {"A": ["192.168.1.1"]},
+    })
+    service = HTTPIntelligenceService(resolver=mock_resolver)
+
+    mock_redirect_response = MagicMock()
+    mock_redirect_response.status_code = 302
+    mock_redirect_response.headers = {"location": "http://private-dest.local/admin"}
+    mock_redirect_response.is_redirect = True
+
+    mock_client = MagicMock()
+    mock_client.get.return_value = mock_redirect_response
+    service._client = mock_client
+
+    obs = service._execute_http_probe(
+        target_url="http://public-hop.com",
+        hostname="public-hop.com",
+        port=80,
+        protocol="tcp",
+        service_name="http",
+        tls_info=None,
+    )
+
+    # Initial request worked, but redirect to 192.168.1.1 was blocked
+    assert obs.is_reachable is False
+    assert "SSRF Redirect Blocked" in (obs.error or "")
+
+
+def test_44_tls_timeout_socket_error_handling():
+    """Test 44: TLS socket connect / handshake timeout returns None cleanly."""
+    mock_resolver = make_mock_resolver({"slow-tls.example.com": {"A": ["93.184.216.34"]}})
+    service = HTTPIntelligenceService(resolver=mock_resolver, timeout=1.0)
+
+    with patch("socket.create_connection", side_effect=socket.timeout("Socket connection timed out")):
+        tls_info = service._inspect_tls("slow-tls.example.com", 443)
+        assert tls_info is None
+
+
+def test_45_dns_ip_validation_cache_thread_safety():
+    """Test 45: HTTPIntelligenceService DNS validation cache caches public IP validations."""
+    mock_resolver = make_mock_resolver({"cached.example.com": {"A": ["93.184.216.34"]}})
+    service = HTTPIntelligenceService(resolver=mock_resolver)
+
+    ips1 = service._get_validated_public_ips("cached.example.com")
+    assert ips1 == ["93.184.216.34"]
+    assert mock_resolver.resolve.call_count == 2  # A + AAAA
+
+    # Second call should use memory cache without re-querying DNS resolver
+    ips2 = service._get_validated_public_ips("cached.example.com")
+    assert ips2 == ["93.184.216.34"]
+    assert mock_resolver.resolve.call_count == 2  # Unchanged
+
+

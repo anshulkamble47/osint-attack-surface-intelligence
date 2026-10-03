@@ -99,6 +99,10 @@ class FindingResponse(BaseModel):
     remediation: Optional[str] = None
     recommendation: str
     is_verified: bool = False
+    correlation_status: Optional[str] = Field(None, description="Correlation verification status: REQUIRES_VERIFICATION, POTENTIAL_MATCH, CONFIRMED")
+    verification_status: Optional[str] = Field(None, description="Verification status: requires_verification, potential, verified")
+    match_basis: Optional[str] = Field(None, description="Technical rationale and evidence basis for technology/vulnerability correlation")
+    is_version_supported: Optional[bool] = Field(None, description="Whether concrete affected version evidence was observed and matched")
     asset: Optional[FindingAssetSummary] = None
     technology: Optional[FindingTechnologySummary] = None
     vulnerability: Optional[FindingVulnerabilitySummary] = None

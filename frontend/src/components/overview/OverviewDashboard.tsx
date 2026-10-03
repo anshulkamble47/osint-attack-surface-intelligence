@@ -25,6 +25,7 @@ import {
 } from '../../types/api';
 import { SeverityBadge } from '../common/SeverityBadge';
 import { RiskScoreBadge } from '../common/RiskScoreBadge';
+import { CompactStatCard } from '../common/CompactStatCard';
 
 export interface ActionResultInfo {
   type: 'success' | 'error' | 'running';
@@ -118,64 +119,62 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
       {/* Target & Investigation Overview Banner */}
       <div
         className="glass-panel"
         style={{
-          padding: '1.5rem',
+          padding: '1.25rem',
           borderLeft: '4px solid var(--cyan-400)',
           display: 'flex',
           flexDirection: 'column',
-          gap: '1.25rem',
+          gap: '1rem',
         }}
       >
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.25rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
-              <h2 style={{ fontSize: '1.35rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.25rem' }}>
+              <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                 {investigation.title}
               </h2>
-              <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
+              <span className="badge badge-info font-mono" style={{ fontSize: '0.72rem' }}>
                 {investigation.reference_code}
               </span>
             </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1.25rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '1rem', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Target Domain: </span>
+                <span style={{ color: 'var(--text-muted)' }}>Target: </span>
                 <strong style={{ color: 'var(--cyan-400)', fontFamily: 'var(--font-mono)' }}>{investigation.target_domain}</strong>
               </div>
               {investigation.scan_options?.organization && (
                 <div>
-                  <span style={{ color: 'var(--text-muted)' }}>Organization: </span>
+                  <span style={{ color: 'var(--text-muted)' }}>Org: </span>
                   <strong style={{ color: 'var(--text-primary)' }}>{investigation.scan_options.organization}</strong>
                 </div>
               )}
               <div>
-                <span style={{ color: 'var(--text-muted)' }}>Lifecycle Status: </span>
-                <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+                <span style={{ color: 'var(--text-muted)' }}>Status: </span>
+                <span className="badge badge-success" style={{ fontSize: '0.68rem' }}>
                   {investigation.status}
                 </span>
               </div>
               <div>
                 <span style={{ color: 'var(--text-muted)' }}>Created: </span>
-                <span style={{ color: 'var(--text-primary)' }}>
-                  {new Date(investigation.created_at).toLocaleDateString()}
-                </span>
+                <span>{new Date(investigation.created_at).toLocaleDateString()}</span>
               </div>
             </div>
           </div>
 
           {/* Modular Pipeline Execution Station */}
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
             <button
               className={`btn ${runningCT ? 'btn-primary' : 'btn-secondary'}`}
               onClick={onRunCT}
               disabled={isAnyRunning && !runningCT}
               title="Discover subdomains via Certificate Transparency"
-              style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem', opacity: isAnyRunning && !runningCT ? 0.6 : 1 }}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem', opacity: isAnyRunning && !runningCT ? 0.6 : 1 }}
             >
-              <Search size={14} className={runningCT ? 'spin' : ''} />
+              <Search size={13} className={runningCT ? 'spin' : ''} />
               <span>{runningCT ? 'Scanning CT...' : '1. Discover CT'}</span>
             </button>
 
@@ -184,9 +183,9 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               onClick={onRunResolve}
               disabled={(isAnyRunning && !runningResolve) || assets.length === 0}
               title="Probe DNS records and web reachability"
-              style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem', opacity: isAnyRunning && !runningResolve ? 0.6 : 1 }}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem', opacity: isAnyRunning && !runningResolve ? 0.6 : 1 }}
             >
-              <Radio size={14} className={runningResolve ? 'spin' : ''} />
+              <Radio size={13} className={runningResolve ? 'spin' : ''} />
               <span>{runningResolve ? 'Probing DNS...' : '2. Resolve DNS'}</span>
             </button>
 
@@ -195,10 +194,10 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               onClick={onRunIPEnrich}
               disabled={(isAnyRunning && !runningIPEnrich) || assets.length === 0}
               title="Enrich IP geolocation, ASN, and RDAP"
-              style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem', opacity: isAnyRunning && !runningIPEnrich ? 0.6 : 1 }}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem', opacity: isAnyRunning && !runningIPEnrich ? 0.6 : 1 }}
             >
-              <Globe2 size={14} className={runningIPEnrich ? 'spin' : ''} />
-              <span>{runningIPEnrich ? 'Enriching IP, ASN & RDAP...' : '3. IP/ASN'}</span>
+              <Globe2 size={13} className={runningIPEnrich ? 'spin' : ''} />
+              <span>{runningIPEnrich ? 'Enriching...' : '3. IP/ASN'}</span>
             </button>
 
             <button
@@ -206,37 +205,37 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               onClick={onRunFingerprint}
               disabled={(isAnyRunning && !runningFingerprint) || assets.length === 0}
               title="Fingerprint HTTP security headers & technologies"
-              style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem', opacity: isAnyRunning && !runningFingerprint ? 0.6 : 1 }}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem', opacity: isAnyRunning && !runningFingerprint ? 0.6 : 1 }}
             >
-              <Cpu size={14} className={runningFingerprint ? 'spin' : ''} />
+              <Cpu size={13} className={runningFingerprint ? 'spin' : ''} />
               <span>{runningFingerprint ? 'Fingerprinting...' : '4. Tech/Headers'}</span>
             </button>
 
             <button
               className={`btn ${runningVulnCorrelate ? 'btn-primary' : 'btn-secondary'}`}
               onClick={onRunVulnCorrelate}
-              disabled={(isAnyRunning && !runningVulnCorrelate) || technologies.length === 0}
+              disabled={isAnyRunning && !runningVulnCorrelate}
               title="Correlate detected technologies with NVD and CISA KEV"
-              style={{ padding: '0.45rem 0.85rem', fontSize: '0.8rem', opacity: isAnyRunning && !runningVulnCorrelate ? 0.6 : 1 }}
+              style={{ padding: '0.4rem 0.75rem', fontSize: '0.78rem', opacity: isAnyRunning && !runningVulnCorrelate ? 0.6 : 1 }}
             >
-              <Flame size={14} className={runningVulnCorrelate ? 'spin' : ''} />
-              <span>{runningVulnCorrelate ? 'Correlating CVEs...' : '5. Correlate CVEs'}</span>
+              <Flame size={13} className={runningVulnCorrelate ? 'spin' : ''} />
+              <span>{runningVulnCorrelate ? 'Correlating...' : '5. Correlate CVEs'}</span>
             </button>
 
             <button
               className="btn btn-primary"
               onClick={onRunFindings}
-              disabled={(isAnyRunning && !runningFindings) || assets.length === 0}
+              disabled={isAnyRunning && !runningFindings}
               title="Evaluate risk model and generate security findings"
               style={{
-                padding: '0.45rem 0.85rem',
-                fontSize: '0.8rem',
+                padding: '0.4rem 0.75rem',
+                fontSize: '0.78rem',
                 background: runningFindings ? '#be123c' : 'linear-gradient(135deg, #e11d48, #f43f5e)',
                 border: 'none',
                 opacity: isAnyRunning && !runningFindings ? 0.6 : 1
               }}
             >
-              <Zap size={14} className={runningFindings ? 'spin' : ''} />
+              <Zap size={13} className={runningFindings ? 'spin' : ''} />
               <span>{runningFindings ? 'Assessing Risk...' : '6. Generate Findings'}</span>
             </button>
           </div>
@@ -246,14 +245,14 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
         {actionStatus && (
           <div
             style={{
-              padding: '0.85rem 1.15rem',
+              padding: '0.75rem 1rem',
               borderRadius: '8px',
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: '0.75rem',
+              gap: '0.65rem',
               background: actionStatus.type === 'error'
                 ? 'rgba(239, 68, 68, 0.12)'
                 : actionStatus.type === 'running'
@@ -273,11 +272,11 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 : 'var(--emerald-400)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <span
                 className="badge"
                 style={{
-                  fontSize: '0.7rem',
+                  fontSize: '0.68rem',
                   fontWeight: 700,
                   background: actionStatus.type === 'error'
                     ? 'rgba(239, 68, 68, 0.25)'
@@ -292,19 +291,19 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               <div>
                 <strong>{actionStatus.message}</strong>
                 {actionStatus.detail && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
                     {actionStatus.detail}
                   </div>
                 )}
               </div>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               {actionStatus.type === 'success' && (
                 <button
                   className="btn btn-secondary"
                   onClick={() => onNavigateTab(getStageTargetTab(actionStatus.stageNumber))}
-                  style={{ padding: '0.25rem 0.65rem', fontSize: '0.75rem' }}
+                  style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem' }}
                 >
                   View Details &rarr;
                 </button>
@@ -313,7 +312,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 <button
                   className="btn btn-primary"
                   onClick={getStageRetryHandler(actionStatus.stageNumber)}
-                  style={{ padding: '0.25rem 0.65rem', fontSize: '0.75rem' }}
+                  style={{ padding: '0.2rem 0.55rem', fontSize: '0.72rem' }}
                 >
                   Retry Action
                 </button>
@@ -322,8 +321,8 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                 <button
                   onClick={onDismissStatus}
                   className="btn btn-secondary"
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
-                  title="Dismiss notification"
+                  style={{ padding: '0.2rem 0.45rem', fontSize: '0.72rem' }}
+                  title="Dismiss"
                 >
                   &times;
                 </button>
@@ -334,99 +333,83 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
       </div>
 
       {/* Intelligence Stat Cards Grid */}
-      <div className="stats-grid">
-        <div className="stat-card" onClick={() => onNavigateTab('assets')} style={{ cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label">Discovered Assets</span>
-            <Globe size={18} color="var(--cyan-400)" />
-          </div>
-          <div className="stat-value">{assets.length}</div>
-          <div className="stat-subtext">
-            {resolvingSubdomains.length} active resolving subdomains
-          </div>
-        </div>
+      <div className="compact-stats-grid">
+        <CompactStatCard
+          icon={Globe}
+          label="Discovered Assets"
+          value={assets.length}
+          subtext={`${resolvingSubdomains.length} active resolving subdomains`}
+          color="cyan"
+          onClick={() => onNavigateTab('assets')}
+        />
 
-        <div className="stat-card" onClick={() => onNavigateTab('dns')} style={{ cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label">DNS & Infrastructure</span>
-            <Network size={18} color="var(--emerald-400)" />
-          </div>
-          <div className="stat-value">{dnsRecords.length}</div>
-          <div className="stat-subtext">
-            Observed DNS records & routing
-          </div>
-        </div>
+        <CompactStatCard
+          icon={Network}
+          label="DNS & Records"
+          value={dnsRecords.length}
+          subtext="Observed DNS records & routing"
+          color="emerald"
+          onClick={() => onNavigateTab('dns')}
+        />
 
-        <div className="stat-card" onClick={() => onNavigateTab('services')} style={{ cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label">Services & Technology</span>
-            <Cpu size={18} color="var(--amber-400)" />
-          </div>
-          <div className="stat-value">{services.length}</div>
-          <div className="stat-subtext">
-            {technologies.length} software technologies detected
-          </div>
-        </div>
+        <CompactStatCard
+          icon={Cpu}
+          label="Services & Tech"
+          value={services.length}
+          subtext={`${technologies.length} software technologies detected`}
+          color="amber"
+          onClick={() => onNavigateTab('services')}
+        />
 
-        <div className="stat-card" onClick={() => onNavigateTab('vulnerabilities')} style={{ cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label">Correlated CVEs</span>
-            <AlertTriangle size={18} color="var(--rose-400)" />
-          </div>
-          <div className="stat-value">{vulnerabilities.length}</div>
-          <div className="stat-subtext" style={{ color: kevVulns.length > 0 ? 'var(--rose-400)' : 'var(--text-muted)' }}>
-            {kevVulns.length} CISA KEV actively exploited
-          </div>
-        </div>
+        <CompactStatCard
+          icon={AlertTriangle}
+          label="Correlated CVEs"
+          value={vulnerabilities.length}
+          subtext={kevVulns.length > 0 ? `${kevVulns.length} in CISA KEV` : 'No known exploited CVEs'}
+          color={kevVulns.length > 0 ? 'rose' : 'purple'}
+          onClick={() => onNavigateTab('vulnerabilities')}
+        />
 
-        <div className="stat-card" onClick={() => onNavigateTab('findings')} style={{ cursor: 'pointer', borderColor: findings.length > 0 ? 'rgba(244, 63, 94, 0.3)' : 'var(--border-subtle)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label" style={{ color: 'var(--rose-400)' }}>Risk Findings</span>
-            <ShieldAlert size={18} color="var(--rose-400)" />
-          </div>
-          <div className="stat-value" style={{ color: 'var(--rose-400)' }}>
-            {findings.length}
-          </div>
-          <div className="stat-subtext">
-            {criticalFindings.length} Critical, {highFindings.length} High
-          </div>
-        </div>
+        <CompactStatCard
+          icon={ShieldAlert}
+          label="Security Findings"
+          value={findings.length}
+          subtext={`${criticalFindings.length} Critical, ${highFindings.length} High`}
+          color={criticalFindings.length > 0 ? 'rose' : findings.length > 0 ? 'amber' : 'emerald'}
+          onClick={() => onNavigateTab('findings')}
+        />
 
-        <div className="stat-card" onClick={() => onNavigateTab('monitoring')} style={{ cursor: 'pointer' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <span className="stat-label">Surface Changes</span>
-            <History size={18} color="#c084fc" />
-          </div>
-          <div className="stat-value" style={{ color: '#c084fc' }}>
-            {changes.length}
-          </div>
-          <div className="stat-subtext">
-            Across scan run comparisons
-          </div>
-        </div>
+        <CompactStatCard
+          icon={History}
+          label="Surface Changes"
+          value={changes.length}
+          subtext="Diff across completed ScanRuns"
+          color="neutral"
+          onClick={() => onNavigateTab('monitoring')}
+        />
       </div>
 
       {/* Split Section: Top Findings vs Recent Changes */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: '1.5rem' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(400px, 1fr))', gap: '1rem', width: '100%' }}>
         {/* Top Findings Panel */}
-        <div className="glass-panel" style={{ padding: '1.25rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.6rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <ShieldAlert size={18} color="var(--rose-400)" />
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <div className="glass-panel" style={{ padding: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <ShieldAlert size={16} color="var(--rose-400)" />
+              <h3 style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                 Critical & High Risk Findings ({criticalFindings.length + highFindings.length})
               </h3>
             </div>
             <button
               onClick={() => onNavigateTab('findings')}
-              style={{ background: 'transparent', border: 'none', color: 'var(--cyan-400)', fontSize: '0.8rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--cyan-400)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
             >
-              View All <ArrowRight size={13} />
+              View All <ArrowRight size={12} />
             </button>
           </div>
 
           {findings.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {findings
                 .filter(f => ['CRITICAL', 'HIGH'].includes(f.severity.toUpperCase()))
                 .slice(0, 5)
@@ -435,63 +418,63 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                     key={f.id}
                     onClick={() => onNavigateTab('findings')}
                     style={{
-                      padding: '0.65rem 0.85rem',
+                      padding: '0.55rem 0.75rem',
                       borderRadius: '8px',
                       background: 'rgba(15, 23, 42, 0.45)',
                       border: '1px solid var(--border-subtle)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      gap: '0.75rem',
+                      gap: '0.65rem',
                       cursor: 'pointer',
                     }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', overflow: 'hidden' }}>
-                      <div style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', overflow: 'hidden' }}>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 600, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                         {f.title}
                       </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
                         {f.asset?.value || investigation.target_domain} • {f.finding_type}
                       </div>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexShrink: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
                       <RiskScoreBadge score={f.context_score} category={f.risk_category} />
                       <SeverityBadge severity={f.severity} size="sm" />
                     </div>
                   </div>
                 ))}
               {criticalFindings.length === 0 && highFindings.length === 0 && (
-                <div style={{ padding: '1.5rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                <div style={{ padding: '1.25rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
                   No Critical or High severity findings observed.
                 </div>
               )}
             </div>
           ) : (
-            <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              No findings generated yet. Click <strong>Generate Findings</strong> above to evaluate risk.
+            <div style={{ padding: '1.5rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              No findings generated yet. Click <strong>6. Generate Findings</strong> above to evaluate risk.
             </div>
           )}
         </div>
 
         {/* Recent Surface Changes Panel */}
-        <div className="glass-panel" style={{ padding: '1.25rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.6rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <History size={18} color="#c084fc" />
-              <h3 style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-primary)' }}>
+        <div className="glass-panel" style={{ padding: '1rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+              <History size={16} color="#c084fc" />
+              <h3 style={{ fontSize: '0.88rem', fontWeight: 600, color: 'var(--text-primary)' }}>
                 Recent Attack Surface Changes ({changes.length})
               </h3>
             </div>
             <button
               onClick={() => onNavigateTab('monitoring')}
-              style={{ background: 'transparent', border: 'none', color: 'var(--cyan-400)', fontSize: '0.8rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.25rem' }}
+              style={{ background: 'transparent', border: 'none', color: 'var(--cyan-400)', fontSize: '0.75rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '0.2rem' }}
             >
-              View All <ArrowRight size={13} />
+              View All <ArrowRight size={12} />
             </button>
           </div>
 
           {changes.length > 0 ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
               {changes.slice(0, 5).map(c => {
                 const typeStyle =
                   c.change_type === 'ADDED'
@@ -505,22 +488,22 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                     key={c.id}
                     onClick={() => onNavigateTab('monitoring')}
                     style={{
-                      padding: '0.65rem 0.85rem',
+                      padding: '0.55rem 0.75rem',
                       borderRadius: '8px',
                       background: 'rgba(15, 23, 42, 0.45)',
                       border: '1px solid var(--border-subtle)',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
-                      gap: '0.75rem',
+                      gap: '0.65rem',
                       cursor: 'pointer',
                     }}
                   >
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem', overflow: 'hidden' }}>
-                      <div style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.15rem', overflow: 'hidden' }}>
+                      <div style={{ fontSize: '0.82rem', fontWeight: 500, color: 'var(--text-primary)', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
                         {c.description || c.entity_key}
                       </div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                      <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                         {c.category} • {c.entity_key}
                       </div>
                     </div>
@@ -529,7 +512,7 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
                       style={{
                         background: typeStyle.bg,
                         color: typeStyle.color,
-                        fontSize: '0.65rem',
+                        fontSize: '0.62rem',
                         fontWeight: 700,
                         flexShrink: 0,
                       }}
@@ -541,8 +524,8 @@ export const OverviewDashboard: React.FC<OverviewDashboardProps> = ({
               })}
             </div>
           ) : (
-            <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              No scan differences computed yet. Use <strong>Monitoring & Changes</strong> to diff ScanRuns.
+            <div style={{ padding: '1.5rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
+              No scan differences computed yet. Use <strong>8. Monitoring & Changes</strong> to establish baseline.
             </div>
           )}
         </div>

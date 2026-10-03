@@ -1,14 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Network,
   Search,
   Radio,
   Globe2,
-  Building
+  Building,
+  Server,
+  History,
+  CheckCircle2
 } from 'lucide-react';
 import { DNSRecordSummary, IPAddressSummary, ASNSummary } from '../../types/api';
 import { ActionResultInfo } from '../overview/OverviewDashboard';
 import { EmptyState } from '../common/EmptyState';
+import { CompactStatCard } from '../common/CompactStatCard';
 
 interface DnsInfrastructureViewProps {
   dnsRecords: DNSRecordSummary[];
@@ -42,6 +46,14 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
   const [activeTab, setActiveTab] = useState<'dns' | 'ips' | 'asns'>('dns');
   const [searchTerm, setSearchTerm] = useState('');
   const [recordTypeFilter, setRecordTypeFilter] = useState('ALL');
+  const [dnsViewMode, setDnsViewMode] = useState<'current' | 'previous'>('current');
+
+  // Auto-select "Current Scan" when a scan finishes
+  useEffect(() => {
+    if (!runningResolve) {
+      setDnsViewMode('current');
+    }
+  }, [runningResolve]);
 
   const filteredRecords = dnsRecords.filter(r => {
     if (recordTypeFilter !== 'ALL' && r.record_type !== recordTypeFilter) return false;
@@ -81,38 +93,38 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
   const recordTypes = Array.from(new Set(dnsRecords.map(r => r.record_type))).sort();
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', width: '100%' }}>
       {/* Header & Controls Panel */}
-      <div className="glass-panel" style={{ padding: '1.5rem' }}>
+      <div className="glass-panel" style={{ padding: '1.25rem' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.25rem' }}>
               <div style={{
                 background: 'rgba(56, 189, 248, 0.15)',
                 color: 'var(--cyan-400)',
-                padding: '0.45rem',
+                padding: '0.4rem',
                 borderRadius: '8px',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center'
               }}>
-                <Network size={20} />
+                <Network size={18} />
               </div>
-              <h2 style={{ fontSize: '1.35rem', fontWeight: 700 }}>DNS & Infrastructure Intelligence</h2>
+              <h2 style={{ fontSize: '1.25rem', fontWeight: 700 }}>DNS & Infrastructure Intelligence</h2>
             </div>
-            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', maxWidth: '800px' }}>
+            <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', maxWidth: '800px' }}>
               Observed DNS records, authoritative nameserver resolutions, IP routing topology, Autonomous Systems (ASNs), and RDAP network allocations.
             </p>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
             <button
               onClick={onRunResolve}
               disabled={runningResolve || runningIPEnrich}
               className="btn btn-secondary"
             >
-              <Radio size={16} className={runningResolve ? 'spin' : ''} />
-              <span>{runningResolve ? 'Probing DNS...' : 'Resolve DNS & Reachability'}</span>
+              <Radio size={14} className={runningResolve ? 'spin' : ''} />
+              <span>{runningResolve ? 'Probing DNS...' : '2. Resolve DNS'}</span>
             </button>
 
             <button
@@ -120,8 +132,8 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
               disabled={runningIPEnrich || runningResolve}
               className="btn btn-primary"
             >
-              <Globe2 size={16} className={runningIPEnrich ? 'spin' : ''} />
-              <span>{runningIPEnrich ? 'Enriching IP, ASN & RDAP...' : 'Enrich IP, ASN & RDAP'}</span>
+              <Globe2 size={14} className={runningIPEnrich ? 'spin' : ''} />
+              <span>{runningIPEnrich ? 'Enriching...' : '3. IP/ASN'}</span>
             </button>
           </div>
         </div>
@@ -130,15 +142,15 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
         {actionStatus && (
           <div
             style={{
-              marginTop: '1.25rem',
-              padding: '0.85rem 1.15rem',
+              marginTop: '1rem',
+              padding: '0.75rem 1rem',
               borderRadius: '8px',
-              fontSize: '0.85rem',
+              fontSize: '0.82rem',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
               flexWrap: 'wrap',
-              gap: '0.75rem',
+              gap: '0.65rem',
               background: actionStatus.type === 'error'
                 ? 'rgba(239, 68, 68, 0.12)'
                 : actionStatus.type === 'running'
@@ -158,11 +170,11 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
                 : 'var(--emerald-400)',
             }}
           >
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
               <span
                 className="badge"
                 style={{
-                  fontSize: '0.7rem',
+                  fontSize: '0.68rem',
                   fontWeight: 700,
                   background: actionStatus.type === 'error'
                     ? 'rgba(239, 68, 68, 0.25)'
@@ -177,325 +189,393 @@ export const DnsInfrastructureView: React.FC<DnsInfrastructureViewProps> = ({
               <div>
                 <strong>{actionStatus.message}</strong>
                 {actionStatus.detail && (
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)', marginTop: '0.15rem' }}>
                     {actionStatus.detail}
                   </div>
                 )}
               </div>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              {actionStatus.type === 'error' && (
-                <button
-                  className="btn btn-primary"
-                  onClick={actionStatus.stageNumber === 2 ? onRunResolve : onRunIPEnrich}
-                  style={{ padding: '0.25rem 0.65rem', fontSize: '0.75rem' }}
-                >
-                  Retry Action
-                </button>
-              )}
-              {onDismissStatus && actionStatus.type !== 'running' && (
-                <button
-                  onClick={onDismissStatus}
-                  className="btn btn-secondary"
-                  style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }}
-                  title="Dismiss notification"
-                >
-                  &times;
-                </button>
-              )}
-            </div>
+            {onDismissStatus && actionStatus.type !== 'running' && (
+              <button
+                onClick={onDismissStatus}
+                className="btn btn-secondary"
+                style={{ padding: '0.2rem 0.45rem', fontSize: '0.72rem' }}
+                title="Dismiss notification"
+              >
+                &times;
+              </button>
+            )}
           </div>
         )}
 
-        {!actionStatus && (resolveError || ipEnrichError) && (
-          <div className="alert alert-danger" style={{ marginTop: '1rem' }}>
+        {(resolveError || ipEnrichError) && (
+          <div className="alert alert-danger" style={{ marginTop: '0.75rem', marginBottom: 0 }}>
             {resolveError || ipEnrichError}
           </div>
         )}
       </div>
 
-      {/* Summary Metrics Strip */}
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-label">Observed DNS Records</div>
-          <div className="stat-value">{dnsRecords.length}</div>
-          <div className="stat-subtext">Across {recordTypes.length} record types</div>
-        </div>
+      {/* Compact Metrics Grid */}
+      <div className="compact-stats-grid">
+        <CompactStatCard
+          icon={Network}
+          label="DNS Records"
+          value={dnsRecords.length}
+          subtext={`Across ${recordTypes.length} record types`}
+          color="cyan"
+          onClick={() => setActiveTab('dns')}
+        />
 
-        <div className="stat-card">
-          <div className="stat-label">Discovered Public IPs</div>
-          <div className="stat-value">{ipAddresses.length}</div>
-          <div className="stat-subtext">Resolved external endpoints</div>
-        </div>
+        <CompactStatCard
+          icon={Server}
+          label="Public IP Addresses"
+          value={ipAddresses.length}
+          subtext="Unique routable hosts"
+          color="emerald"
+          onClick={() => setActiveTab('ips')}
+        />
 
-        <div className="stat-card">
-          <div className="stat-label">Observed Autonomous Systems (ASNs)</div>
-          <div className="stat-value">{asns.length}</div>
-          <div className="stat-subtext">Network routing prefixes</div>
-        </div>
+        <CompactStatCard
+          icon={Building}
+          label="Autonomous Systems"
+          value={asns.length}
+          subtext="BGP routing origins"
+          color="amber"
+          onClick={() => setActiveTab('asns')}
+        />
 
-        <div className="stat-card">
-          <div className="stat-label">Root Target Domain</div>
-          <div className="stat-value" style={{ fontSize: '1.2rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {targetDomain}
-          </div>
-          <div className="stat-subtext">Authoritative zone</div>
-        </div>
+        <CompactStatCard
+          icon={Globe2}
+          label="Target Scope"
+          value={targetDomain}
+          subtext="Root assessment target"
+          color="neutral"
+        />
       </div>
 
-      {/* Navigation Tabs & Search Toolbar */}
-      <div className="glass-panel" style={{ padding: '1rem 1.25rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
+      {/* Tabs and DNS Observation Mode Toggle */}
+      <div className="glass-panel" style={{ padding: '0.75rem 1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '0.75rem' }}>
+          {/* Sub-View Navigation Tabs */}
+          <div style={{ display: 'flex', gap: '0.4rem' }}>
             <button
               onClick={() => setActiveTab('dns')}
               className={`btn ${activeTab === 'dns' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
             >
-              <Network size={15} />
+              <Network size={13} />
               <span>DNS Records ({dnsRecords.length})</span>
             </button>
-
             <button
               onClick={() => setActiveTab('ips')}
               className={`btn ${activeTab === 'ips' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
             >
-              <Globe2 size={15} />
+              <Server size={13} />
               <span>IP Addresses ({ipAddresses.length})</span>
             </button>
-
             <button
               onClick={() => setActiveTab('asns')}
               className={`btn ${activeTab === 'asns' ? 'btn-primary' : 'btn-secondary'}`}
-              style={{ padding: '0.45rem 1rem', fontSize: '0.85rem' }}
+              style={{ fontSize: '0.78rem', padding: '0.35rem 0.75rem' }}
             >
-              <Building size={15} />
-              <span>ASNs & RDAP ({asns.length})</span>
+              <Building size={13} />
+              <span>Autonomous Systems ({asns.length})</span>
             </button>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, maxWidth: '450px', justifyContent: 'flex-end' }}>
-            <div style={{ position: 'relative', width: '100%', maxWidth: '280px' }}>
-              <Search size={16} color="var(--text-muted)" style={{ position: 'absolute', left: '0.75rem', top: '50%', transform: 'translateY(-50%)' }} />
-              <input
-                type="text"
-                className="form-input"
-                placeholder="Filter infrastructure..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                style={{ paddingLeft: '2.25rem' }}
-              />
+          {/* Current Scan vs Previous Observations Toggle (for DNS tab) */}
+          {activeTab === 'dns' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Observation State:</span>
+              <div className="segmented-toggle">
+                <button
+                  className={`segmented-toggle-btn ${dnsViewMode === 'current' ? 'active' : ''}`}
+                  onClick={() => setDnsViewMode('current')}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <CheckCircle2 size={12} />
+                    Current Scan
+                  </span>
+                </button>
+                <button
+                  className={`segmented-toggle-btn ${dnsViewMode === 'previous' ? 'active' : ''}`}
+                  onClick={() => setDnsViewMode('previous')}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <History size={12} />
+                    Previous Observations
+                  </span>
+                </button>
+              </div>
             </div>
-
-            {activeTab === 'dns' && recordTypes.length > 0 && (
-              <select
-                className="form-input"
-                value={recordTypeFilter}
-                onChange={e => setRecordTypeFilter(e.target.value)}
-                style={{ width: 'auto', padding: '0.4rem 0.75rem' }}
-              >
-                <option value="ALL">All Types</option>
-                {recordTypes.map(t => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-            )}
-          </div>
+          )}
         </div>
+
+        {/* Scan in Progress Indicator / Observation Mode Banner */}
+        {runningResolve && (
+          <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.85rem', borderRadius: '6px', background: 'rgba(56, 189, 248, 0.1)', border: '1px solid rgba(56, 189, 248, 0.25)', fontSize: '0.75rem', color: 'var(--cyan-400)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Radio size={13} className="spin" />
+            <span>Active DNS scan in progress... Showing existing baseline observations below until the new ScanRun completes.</span>
+          </div>
+        )}
+
+        {!runningResolve && dnsViewMode === 'previous' && (
+          <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.85rem', borderRadius: '6px', background: 'rgba(148, 163, 184, 0.1)', border: '1px solid rgba(148, 163, 184, 0.2)', fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <History size={13} color="var(--amber-400)" />
+            <span>Viewing historical baseline DNS observations. Click <strong>Current Scan</strong> to view newly verified results.</span>
+          </div>
+        )}
       </div>
 
-      {/* Tab Content Panels */}
+      {/* Sub-View 1: DNS Records Table */}
       {activeTab === 'dns' && (
-        dnsRecords.length > 0 ? (
-          <div className="glass-panel" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>Record Type</th>
-                    <th>Record Value / Resolution</th>
-                    <th>TTL</th>
-                    <th>Resolver Source</th>
-                    <th>Subdomain ID</th>
-                    <th>Collected</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredRecords.map(rec => (
-                    <tr key={rec.id}>
-                      <td>
-                        <span className="badge badge-info" style={{ fontSize: '0.75rem', fontWeight: 700 }}>
-                          {rec.record_type}
-                        </span>
-                      </td>
-                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--cyan-400)', wordBreak: 'break-all' }}>
-                        {rec.value}
-                      </td>
-                      <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem', fontFamily: 'var(--font-mono)' }}>
-                        {rec.ttl !== null && rec.ttl !== undefined ? `${rec.ttl}s` : '—'}
-                      </td>
-                      <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        {rec.resolver || 'Authoritative DNS'}
-                      </td>
-                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        {rec.subdomain_id ? rec.subdomain_id.substring(0, 8) + '...' : '—'}
-                      </td>
-                      <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>
-                        {new Date(rec.collected_at).toLocaleTimeString()}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+        <>
+          <div className="glass-panel" style={{ padding: '0.65rem 1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, minWidth: '220px' }}>
+                <div style={{ position: 'relative', width: '100%', maxWidth: '280px' }}>
+                  <Search size={14} color="var(--text-muted)" style={{ position: 'absolute', left: '0.65rem', top: '50%', transform: 'translateY(-50%)' }} />
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Filter records..."
+                    value={searchTerm}
+                    onChange={e => setSearchTerm(e.target.value)}
+                    style={{ width: '100%', paddingLeft: '1.9rem', fontSize: '0.8rem' }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>Type:</span>
+                  <select
+                    className="form-input"
+                    value={recordTypeFilter}
+                    onChange={e => setRecordTypeFilter(e.target.value)}
+                    style={{ fontSize: '0.8rem', padding: '0.3rem 0.6rem' }}
+                  >
+                    <option value="ALL">All Types</option>
+                    {recordTypes.map(rt => (
+                      <option key={rt} value={rt}>{rt}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                Showing <strong>{filteredRecords.length}</strong> of {dnsRecords.length} records
+              </div>
             </div>
           </div>
-        ) : (
-          <div className="glass-panel" style={{ padding: '2rem' }}>
-            <EmptyState
-              title="No DNS Records Observed"
-              description="No DNS resolution data is available for this investigation. Run the DNS resolution probe to enumerate active A, AAAA, CNAME, MX, and TXT records."
-              icon={Network}
-              actionLabel="Run DNS & Reachability Probe"
-              onAction={onRunResolve}
-            />
-          </div>
-        )
+
+          {filteredRecords.length > 0 ? (
+            <div className="glass-panel" style={{ overflow: 'hidden' }}>
+              <div style={{ overflowX: 'auto', maxHeight: '500px' }}>
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Record Type</th>
+                      <th>Resolved Value / Target</th>
+                      <th>TTL (s)</th>
+                      <th>Authoritative Resolver</th>
+                      <th>Observed Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredRecords.map((r, i) => (
+                      <tr key={i}>
+                        <td>
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: '0.68rem',
+                              fontFamily: 'var(--font-mono)',
+                              background:
+                                r.record_type === 'A' ? 'rgba(56, 189, 248, 0.15)' :
+                                r.record_type === 'AAAA' ? 'rgba(168, 85, 247, 0.15)' :
+                                r.record_type === 'MX' ? 'rgba(52, 211, 153, 0.15)' :
+                                r.record_type === 'NS' ? 'rgba(251, 191, 36, 0.15)' :
+                                'rgba(148, 163, 184, 0.15)',
+                              color:
+                                r.record_type === 'A' ? 'var(--cyan-400)' :
+                                r.record_type === 'AAAA' ? 'var(--purple-400)' :
+                                r.record_type === 'MX' ? 'var(--emerald-400)' :
+                                r.record_type === 'NS' ? 'var(--amber-400)' :
+                                'var(--text-secondary)',
+                            }}
+                          >
+                            {r.record_type}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 600, color: 'var(--text-primary)' }}>
+                            {r.value}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                            {r.ttl || '—'}
+                          </span>
+                        </td>
+                        <td>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                            {r.resolver || 'Default Recursive'}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                          {r.collected_at ? new Date(r.collected_at).toLocaleString() : 'Recent'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="glass-panel" style={{ padding: '2rem' }}>
+              <EmptyState
+                title={dnsRecords.length === 0 ? "No DNS Records Observed" : "No Matching Records"}
+                description={
+                  dnsRecords.length === 0
+                    ? "Click '2. Resolve DNS' above to actively probe DNS records and reachability for all discovered candidate assets."
+                    : "No DNS records matched your search term or record type filter."
+                }
+                icon={Network}
+                actionLabel={dnsRecords.length === 0 ? "2. Resolve DNS" : undefined}
+                onAction={dnsRecords.length === 0 ? onRunResolve : undefined}
+              />
+            </div>
+          )}
+        </>
       )}
 
+      {/* Sub-View 2: IP Addresses Grid / Table */}
       {activeTab === 'ips' && (
-        ipAddresses.length > 0 ? (
-          <div className="glass-panel" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
+        <div className="glass-panel" style={{ overflow: 'hidden' }}>
+          {filteredIPs.length > 0 ? (
+            <div style={{ overflowX: 'auto', maxHeight: '500px' }}>
               <table className="data-table">
                 <thead>
                   <tr>
                     <th>IP Address</th>
-                    <th>Version</th>
-                    <th>Observed Organization / Network</th>
-                    <th>ASN Number</th>
-                    <th>Country</th>
+                    <th>Type / Version</th>
+                    <th>Organization / ISP</th>
+                    <th>Country / Geo</th>
                     <th>Reverse DNS (PTR)</th>
-                    <th>Status</th>
+                    <th>Associated ASN</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredIPs.map(ip => (
-                    <tr key={ip.id}>
-                      <td style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--emerald-400)' }}>
-                        {ip.ip_address}
+                  {filteredIPs.map((ip, i) => (
+                    <tr key={i}>
+                      <td>
+                        <span style={{ fontFamily: 'var(--font-mono)', fontWeight: 700, color: 'var(--cyan-400)' }}>
+                          {ip.ip_address}
+                        </span>
                       </td>
                       <td>
-                        <span className="badge badge-neutral" style={{ fontSize: '0.7rem' }}>
+                        <span className="badge badge-neutral" style={{ fontSize: '0.68rem' }}>
                           IPv{ip.ip_version}
                         </span>
                       </td>
-                      <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
-                        {ip.organization || ip.asn?.name || 'Not Enriched / Unallocated'}
+                      <td>
+                        <span style={{ fontWeight: 500 }}>{ip.organization || '—'}</span>
                       </td>
                       <td>
-                        {ip.asn ? (
-                          <span className="badge badge-info font-mono" style={{ fontSize: '0.75rem' }}>
-                            AS{ip.asn.asn_number}
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
-                        )}
-                      </td>
-                      <td>
-                        {ip.country ? (
-                          <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
-                            {ip.country}
-                          </span>
-                        ) : (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
-                        )}
+                        <span className="badge badge-info" style={{ fontSize: '0.68rem' }}>
+                          {ip.country || 'Global'}
+                        </span>
                       </td>
                       <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                         {ip.reverse_dns || '—'}
                       </td>
                       <td>
-                        <span className={`badge ${ip.is_active ? 'badge-success' : 'badge-neutral'}`} style={{ fontSize: '0.7rem' }}>
-                          {ip.is_active ? 'Active' : 'Inactive'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ) : (
-          <div className="glass-panel" style={{ padding: '2rem' }}>
-            <EmptyState
-              title="No IP Addresses Enriched"
-              description="No enriched IP address observations are recorded yet. Run IP & ASN enrichment to resolve geolocation, BGP routing prefixes, and network attribution."
-              icon={Globe2}
-              actionLabel="Enrich IP, ASN & RDAP"
-              onAction={onRunIPEnrich}
-            />
-          </div>
-        )
-      )}
-
-      {activeTab === 'asns' && (
-        asns.length > 0 ? (
-          <div className="glass-panel" style={{ padding: '0', overflow: 'hidden' }}>
-            <div style={{ overflowX: 'auto' }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>ASN Number</th>
-                    <th>Autonomous System Name</th>
-                    <th>Allocated Routing Prefix</th>
-                    <th>Country</th>
-                    <th>Associated Observed IPs</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredASNs.map((asn, idx) => (
-                    <tr key={idx}>
-                      <td style={{ fontWeight: 700, fontFamily: 'var(--font-mono)', color: 'var(--cyan-400)' }}>
-                        AS{asn.asn_number}
-                      </td>
-                      <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {asn.name}
-                      </td>
-                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                        {asn.allocated_prefix || '—'}
-                      </td>
-                      <td>
-                        {asn.country ? (
-                          <span className="badge badge-neutral" style={{ fontSize: '0.75rem' }}>
-                            {asn.country}
+                        {ip.asn ? (
+                          <span className="badge badge-purple" style={{ fontSize: '0.68rem' }}>
+                            AS{ip.asn.asn_number} ({ip.asn.name})
                           </span>
                         ) : (
                           <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>—</span>
                         )}
                       </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div style={{ padding: '2rem' }}>
+              <EmptyState
+                title={ipAddresses.length === 0 ? "No IP Addresses Enriched Yet" : "No Matching IP Addresses"}
+                description={
+                  ipAddresses.length === 0
+                    ? "Click '3. IP/ASN' above to enrich geolocation, ASN origin, and RDAP network ownership."
+                    : "No IP addresses matched your search term."
+                }
+                icon={Server}
+                actionLabel={ipAddresses.length === 0 ? "3. IP/ASN" : undefined}
+                onAction={ipAddresses.length === 0 ? onRunIPEnrich : undefined}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Sub-View 3: Autonomous Systems (ASNs) */}
+      {activeTab === 'asns' && (
+        <div className="glass-panel" style={{ overflow: 'hidden' }}>
+          {filteredASNs.length > 0 ? (
+            <div style={{ overflowX: 'auto', maxHeight: '500px' }}>
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ASN Number</th>
+                    <th>Autonomous System Name</th>
+                    <th>Country / Registry</th>
+                    <th>Allocated BGP Prefix</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredASNs.map((asn, i) => (
+                    <tr key={i}>
                       <td>
-                        <span className="badge badge-info" style={{ fontSize: '0.75rem' }}>
-                          {asn.ip_count || 1} IPs
+                        <span className="badge badge-purple font-mono" style={{ fontSize: '0.75rem', fontWeight: 700 }}>
+                          AS{asn.asn_number}
                         </span>
+                      </td>
+                      <td>
+                        <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{asn.name}</span>
+                      </td>
+                      <td>
+                        <span className="badge badge-neutral" style={{ fontSize: '0.68rem' }}>
+                          {asn.country || 'Global'}
+                        </span>
+                      </td>
+                      <td style={{ fontFamily: 'var(--font-mono)', fontSize: '0.78rem', color: 'var(--cyan-400)' }}>
+                        {asn.allocated_prefix || '—'}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-          </div>
-        ) : (
-          <div className="glass-panel" style={{ padding: '2rem' }}>
-            <EmptyState
-              title="No Autonomous Systems (ASNs) Observed"
-              description="No ASN routing data has been recorded for this investigation. Run IP & ASN enrichment to map IP addresses to their autonomous network providers."
-              icon={Building}
-              actionLabel="Enrich IP, ASN & RDAP"
-              onAction={onRunIPEnrich}
-            />
-          </div>
-        )
+          ) : (
+            <div style={{ padding: '2rem' }}>
+              <EmptyState
+                title={asns.length === 0 ? "No ASNs Discovered Yet" : "No Matching ASNs"}
+                description={
+                  asns.length === 0
+                    ? "Click '3. IP/ASN' above to perform BGP ASN origin lookup for all resolved public IP addresses."
+                    : "No ASNs matched your search term."
+                }
+                icon={Building}
+                actionLabel={asns.length === 0 ? "3. IP/ASN" : undefined}
+                onAction={asns.length === 0 ? onRunIPEnrich : undefined}
+              />
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

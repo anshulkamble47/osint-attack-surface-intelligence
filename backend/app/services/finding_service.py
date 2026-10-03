@@ -1,5 +1,6 @@
 """Deterministic Findings, Contextual Risk Scoring, and Evidence Intelligence Service."""
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Tuple
@@ -161,20 +162,17 @@ class FindingService:
                 .first()
             )
 
-        resolved_scan_run_id = target_scan_run.id if target_scan_run else None
+        resolved_scan_run_id = scan_run_id
+        effective_scan_run_id = scan_run_id or (target_scan_run.id if target_scan_run else None)
         scan_run_number = target_scan_run.run_number if target_scan_run else None
 
         # Fetch existing findings to enable idempotency and prevent duplicates
         existing_findings_query = select(Finding).where(
             Finding.investigation_id == investigation_id
         )
-        if resolved_scan_run_id:
+        if scan_run_id:
             existing_findings_query = existing_findings_query.where(
-                Finding.scan_run_id == resolved_scan_run_id
-            )
-        else:
-            existing_findings_query = existing_findings_query.where(
-                Finding.scan_run_id.is_(None)
+                Finding.scan_run_id == scan_run_id
             )
 
         existing_findings = db.execute(existing_findings_query).scalars().all()
@@ -196,8 +194,8 @@ class FindingService:
             .join(Asset, Technology.asset_id == Asset.id)
             .where(Asset.investigation_id == investigation_id)
         )
-        if resolved_scan_run_id:
-            tv_query = tv_query.where(Technology.scan_run_id == resolved_scan_run_id)
+        if scan_run_id:
+            tv_query = tv_query.where(Technology.scan_run_id == scan_run_id)
 
         tech_vulns = db.execute(tv_query).scalars().all()
 
@@ -218,15 +216,42 @@ class FindingService:
                 if svc and svc.http_status and svc.http_status < 500:
                     is_exposed = True
 
-            # Check CISA KEV listing
+            # Parse correlation status, match basis, and CISA KEV listing from TechnologyVulnerability
+            corr_status = "REQUIRES_VERIFICATION" if not tech.version else "POTENTIAL_MATCH"
+            match_basis = None
             is_kev = False
-            if tv.notes and "cisa_kev" in tv.notes.lower():
-                is_kev = True
-            elif vuln.references:
-                for ref in vuln.references:
-                    if isinstance(ref, dict) and "cisa.gov" in str(ref.get("url", "")).lower():
-                        is_kev = True
-                        break
+
+            if tv.notes:
+                try:
+                    notes_obj = json.loads(tv.notes) if isinstance(tv.notes, str) else tv.notes
+                    if isinstance(notes_obj, dict):
+                        corr_status = notes_obj.get("correlation_status", corr_status)
+                        match_basis = notes_obj.get("match_basis", match_basis)
+                        if notes_obj.get("is_kev") or notes_obj.get("cisa_kev"):
+                            is_kev = True
+                except Exception:
+                    pass
+
+            if not is_kev:
+                if tv.notes and "cisa_kev" in tv.notes.lower():
+                    is_kev = True
+                elif vuln.references:
+                    for ref in vuln.references:
+                        if isinstance(ref, dict) and "cisa.gov" in str(ref.get("url", "")).lower():
+                            is_kev = True
+                            break
+
+            verif_status = tv.verification_status or ("requires_verification" if not tech.version else "potential")
+            is_version_supported = bool(tech.version and corr_status != "REQUIRES_VERIFICATION")
+
+            if not match_basis:
+                if not tech.version:
+                    match_basis = (
+                        f"Observed technology '{tech.name}' without verifiable version. "
+                        f"CPE/advisory matches '{vuln.cve_id}'. Verification required."
+                    )
+                else:
+                    match_basis = f"Observed technology '{tech.name}' version '{tech.version}' matches advisory criteria."
 
             # Calculate risk score and factors
             risk_score, risk_cat, risk_factors = self.calculate_risk_score(
@@ -237,6 +262,12 @@ class FindingService:
                 tech_confidence=tech.confidence,
                 finding_type="VULNERABILITY",
             )
+
+            # Preserve correlation verification state in explainable risk factors
+            risk_factors["correlation_status"] = corr_status
+            risk_factors["verification_status"] = verif_status
+            risk_factors["match_basis"] = match_basis
+            risk_factors["is_version_supported"] = is_version_supported
 
             title = f"Potential Vulnerability: {vuln.cve_id} affecting {tech.name} {tech.version or ''}".strip()
             description = (
@@ -270,7 +301,7 @@ class FindingService:
                 finding = Finding(
                     reference_code=ref_code,
                     investigation_id=investigation_id,
-                    scan_run_id=resolved_scan_run_id,
+                    scan_run_id=effective_scan_run_id,
                     asset_id=asset.id,
                     technology_id=tech.id,
                     vulnerability_id=vuln.id,
@@ -300,8 +331,8 @@ class FindingService:
             .join(Asset, ServiceExposure.asset_id == Asset.id)
             .where(Asset.investigation_id == investigation_id)
         )
-        if resolved_scan_run_id:
-            svc_query = svc_query.where(ServiceExposure.scan_run_id == resolved_scan_run_id)
+        if scan_run_id:
+            svc_query = svc_query.where(ServiceExposure.scan_run_id == scan_run_id)
 
         services = db.execute(svc_query).scalars().all()
 
@@ -327,6 +358,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="SECURITY_HEADER",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct observation of HTTP response headers on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Missing HTTP Strict Transport Security (HSTS) on port {svc.port}"
                 desc = (
                     f"The HTTPS web service on {asset.value}:{svc.port} does not emit the 'Strict-Transport-Security' response header. "
@@ -349,7 +385,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="security_header",
                         finding_type="SECURITY_HEADER",
@@ -382,6 +418,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="SECURITY_HEADER",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct observation of HTTP response headers on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Missing Content Security Policy (CSP) Header on port {svc.port}"
                 desc = (
                     f"The web application on {asset.value}:{svc.port} does not declare a 'Content-Security-Policy' header, "
@@ -404,7 +445,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="security_header",
                         finding_type="SECURITY_HEADER",
@@ -437,6 +478,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="SECURITY_HEADER",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct observation of HTTP response headers on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Missing Anti-Clickjacking Header (X-Frame-Options) on port {svc.port}"
                 desc = (
                     f"The web application on {asset.value}:{svc.port} is missing the 'X-Frame-Options' header, "
@@ -459,7 +505,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="security_header",
                         finding_type="SECURITY_HEADER",
@@ -492,6 +538,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="SECURITY_HEADER",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct observation of HTTP response headers on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Missing MIME-Sniffing Protection (X-Content-Type-Options) on port {svc.port}"
                 desc = (
                     f"The web application on {asset.value}:{svc.port} does not specify 'X-Content-Type-Options: nosniff', "
@@ -514,7 +565,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="security_header",
                         finding_type="SECURITY_HEADER",
@@ -546,6 +597,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="TLS_SECURITY",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct TLS handshake negotiation with legacy protocol '{svc.tls_version}' on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Deprecated TLS Protocol Version ({svc.tls_version}) on port {svc.port}"
                 desc = (
                     f"The service on {asset.value}:{svc.port} negotiates connections using legacy protocol version '{svc.tls_version}', "
@@ -568,7 +624,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="tls_security",
                         finding_type="TLS_SECURITY",
@@ -600,6 +656,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="SERVICE_EXPOSURE",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct network service observation of cleartext HTTP on port {svc.port}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Cleartext HTTP Service Exposed on Port {svc.port}"
                 desc = (
                     f"The service on {asset.value}:{svc.port} serves cleartext HTTP without automatic redirection to HTTPS. "
@@ -622,7 +683,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=asset.id,
                         category="service_exposure",
                         finding_type="SERVICE_EXPOSURE",
@@ -646,9 +707,9 @@ class FindingService:
         # 5. CERTIFICATE EXCLUSIVITY & EXPIRATION (Stage 3A Certificates)
         # -------------------------------------------------------------
         cert_query = select(subdomain_certificates)
-        if resolved_scan_run_id:
+        if scan_run_id:
             cert_query = cert_query.where(
-                subdomain_certificates.c.scan_run_id == resolved_scan_run_id
+                subdomain_certificates.c.scan_run_id == scan_run_id
             )
 
         cert_assocs = db.execute(cert_query).all()
@@ -671,6 +732,11 @@ class FindingService:
                     tech_confidence=1.0,
                     finding_type="TLS_SECURITY",
                 )
+                risk_factors["correlation_status"] = "CONFIRMED"
+                risk_factors["verification_status"] = "verified"
+                risk_factors["match_basis"] = f"Direct certificate inspection: certificate for '{cert.subject_cn}' expired on {cert.valid_to}"
+                risk_factors["is_version_supported"] = None
+
                 title = f"Expired TLS Certificate for {cert.subject_cn}"
                 desc = (
                     f"The TLS certificate for '{cert.subject_cn}' (Issuer: {cert.issuer}) associated with {sub.subdomain_name} "
@@ -693,7 +759,7 @@ class FindingService:
                     f = Finding(
                         reference_code=ref_code,
                         investigation_id=investigation_id,
-                        scan_run_id=resolved_scan_run_id,
+                        scan_run_id=effective_scan_run_id,
                         asset_id=sub_asset.id,
                         category="tls_security",
                         finding_type="TLS_SECURITY",
@@ -735,7 +801,7 @@ class FindingService:
 
         return GenerateFindingsResponse(
             investigation_id=investigation_id,
-            scan_run_id=resolved_scan_run_id,
+            scan_run_id=effective_scan_run_id,
             scan_run_number=scan_run_number,
             findings_generated=created_count,
             findings_updated=updated_count,
@@ -883,6 +949,35 @@ class FindingService:
 
         risk_cat = f.risk_factors.get("risk_category", "LOW") if f.risk_factors else "LOW"
 
+        corr_status = None
+        verif_status = None
+        match_basis = None
+        is_version_supported = None
+
+        if f.risk_factors:
+            corr_status = f.risk_factors.get("correlation_status")
+            verif_status = f.risk_factors.get("verification_status")
+            match_basis = f.risk_factors.get("match_basis")
+            is_version_supported = f.risk_factors.get("is_version_supported")
+
+        # Robust fallback for legacy findings
+        if not corr_status and f.category == "vulnerability":
+            if f.technology and not f.technology.version:
+                corr_status = "REQUIRES_VERIFICATION"
+                verif_status = "requires_verification"
+                is_version_supported = False
+                match_basis = f"Observed technology '{f.technology.name}' without verifiable version. Verification required."
+            else:
+                corr_status = "POTENTIAL_MATCH"
+                verif_status = "potential"
+                is_version_supported = True if (f.technology and f.technology.version) else False
+                match_basis = f"Observed technology '{f.technology.name if f.technology else ''}' with version criteria."
+        elif not corr_status and f.category in ["security_header", "tls_security", "service_exposure"]:
+            corr_status = "CONFIRMED"
+            verif_status = "verified"
+            is_version_supported = None
+            match_basis = "Direct observation of asset configuration."
+
         return FindingResponse(
             id=f.id,
             reference_code=f.reference_code,
@@ -907,6 +1002,10 @@ class FindingService:
             remediation=f.remediation or f.recommendation,
             recommendation=f.recommendation,
             is_verified=f.is_verified,
+            correlation_status=corr_status,
+            verification_status=verif_status,
+            match_basis=match_basis,
+            is_version_supported=is_version_supported,
             asset=asset_summary,
             technology=tech_summary,
             vulnerability=vuln_summary,

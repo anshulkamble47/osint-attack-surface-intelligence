@@ -67,3 +67,28 @@ class ChangeListResponse(BaseModel):
     modified_count: int
     changes_by_category: Dict[str, int]
     changes: List[ChangeRecordResponse]
+
+
+class SnapshotSummaryResponse(BaseModel):
+    """Representation of an eligible complete point-in-time attack surface assessment snapshot."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    investigation_id: uuid.UUID
+    run_number: int
+    status: str
+    is_snapshot: bool = True
+    coverage: str = "Complete Attack Surface"
+    summary: Dict[str, Any] = Field(default_factory=dict)
+    started_at: datetime
+    completed_at: Optional[datetime] = None
+
+
+class SnapshotListResponse(BaseModel):
+    """Response returned when listing complete assessment snapshots for an investigation."""
+
+    investigation_id: uuid.UUID
+    total_snapshots: int
+    snapshots: List[SnapshotSummaryResponse]
+
