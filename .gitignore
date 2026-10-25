@@ -66,3 +66,13 @@ Thumbs.db
 docs/360_F_743053883_PX2ayk40WllhG8d71reoiaQYIgXLJ8di.jpg
 docs/360_F_743053883_PX2ayk40WllhG8d71reoiaQYIgXLJ8di.webp
 docs/osint dashboard system architecture image.png
+
+# Environment example: allow only the safe template
+!.env.example
+
+# Python testing and tooling
+.mypy_cache/
+.ruff_cache/
+
+# Frontend build outputs
+frontend/.vite/
