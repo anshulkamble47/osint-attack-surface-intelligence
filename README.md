@@ -191,33 +191,113 @@ backend\.venv\Scripts\python.exe -m pytest tests/ -v
 
 ## 8. Current Implementation Status
 
-- [x] **Stage 0 — Project Foundation (Completed)**
-  - Docker Compose configuration for PostgreSQL 16.
-  - FastAPI backend with Pydantic Settings, CORS, and structured logging.
-  - Live PostgreSQL database health probe and `/api/health` endpoint.
-  - React + TypeScript + Vite frontend communicating with backend.
-  - Comprehensive `.gitignore`, `.env.example`, and test suite.
-- [x] **Stage 1 — Architecture & Database Schema Design (Completed)**
-  - 18 SQLAlchemy 2.0 ORM domain models (`User`, `Target`, `Investigation`, `ScanRun`, `Asset`, `Domain`, `Subdomain`, `DNSRecord`, `ASN`, `IPAddress`, `ServiceExposure`, `Certificate`, `Technology`, `TechnologyVulnerability`, `Vulnerability`, `Finding`, `Evidence`, `AssetRelationship`, `ChangeRecord`, `TimelineEvent`).
-  - Strict separation of observed technology vs. potential CVE matches requiring verification.
-  - Cryptographic evidence integrity model with SHA-256 hash validation.
+### Completed Core Platform Modules (Stages 0 – 10)
+
+- [x] **Stage 0 — Project Foundation**
+  - Containerized PostgreSQL 16 environment via Docker Compose with health checks.
+  - FastAPI asynchronous backend with Pydantic Settings, CORS middleware, and structured logging.
+  - Live PostgreSQL database health probe and `/api/health` monitoring endpoint.
+  - React 18 + TypeScript + Vite frontend client connected to the backend.
+  - Comprehensive `.gitignore`, `.env.example`, and baseline health tests.
+
+- [x] **Stage 1 — Architecture & Database Schema Design**
+  - 18 SQLAlchemy 2.0 ORM models (`User`, `Target`, `Investigation`, `ScanRun`, `Asset`, `Domain`, `Subdomain`, `DNSRecord`, `ASN`, `IPAddress`, `ServiceExposure`, `Certificate`, `Technology`, `TechnologyVulnerability`, `Vulnerability`, `Finding`, `Evidence`, `AssetRelationship`, `ChangeRecord`, `TimelineEvent`).
+  - Strict separation of observed technology facts from potential CVE matches requiring verification.
+  - Cryptographic evidence integrity model with SHA-256 hash tracking.
   - Directional graph edges for the Attack Surface Correlation Graph.
-  - Alembic migration environment and initial schema migration `001_initial_schema.py`.
-  - Comprehensive model tests in `tests/test_models.py` (9/9 automated tests passing).
-- [x] **Stage 2 — Backend Core Foundation & Authentication (Completed)**
-  - Secure salted password hashing using Bcrypt (cost factor 12).
+  - Alembic database migration environment with zero schema drift.
+
+- [x] **Stage 2 — Backend Core Foundation & Authentication**
+  - Secure salted password hashing using Bcrypt (cost factor 12) / Argon2.
   - JWT token management (HMAC-SHA256) with configurable expiration.
   - Authentication endpoints: `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me`.
-  - Reusable role-based access control dependencies (`require_role("admin")`, `require_role("analyst")`, `require_role("auditor")`).
-  - Comprehensive authentication test suite in `tests/test_auth.py` (20/20 automated tests passing).
-- [ ] **Stage 3** — Certificate Transparency & DNS Discovery
-- [ ] **Stage 4** — IP / ASN / RDAP Infrastructure Intelligence
-- [ ] **Stage 5** — Technology Fingerprinting & HTTP Security Analysis
-- [ ] **Stage 6** — Vulnerability Intelligence & CVE Correlation
-- [ ] **Stage 7** — Asset Correlation Engine & Attack-Surface Graph
-- [ ] **Stage 8** — Findings, Risk/Context Engine & Evidence Integrity
-- [ ] **Stage 9** — Scan History, Change Detection & Timeline
-- [ ] **Stage 10** — React Dashboard & Investigation Management UI
-- [ ] **Stage 11** — AI Security Analyst (Groq LLM Integration)
-- [ ] **Stage 12** — Automated PDF Report Generation (ReportLab)
-- [ ] **Stage 13** — Comprehensive Testing, Hardening & Evaluation
+  - Reusable role-based access control (RBAC) dependencies (`admin`, `analyst`, `auditor`).
+
+- [x] **Stage 3 — Certificate Transparency & DNS Discovery**
+  - Multi-provider Certificate Transparency discovery engine (`crt.sh` primary with resilient automatic fallback to `Certspotter`).
+  - Wildcard / apex deduplication and Subject Alternative Name (SAN) extraction.
+  - Active DNS record probing (`A`, `AAAA`, `CNAME`, `MX`, `NS`, `TXT`) with thread-safe query caching.
+  - Strict pre-flight SSRF protection blocking private RFC 1918, loopback, link-local, and reserved IP ranges.
+  - Reachability engine probing ports 80/HTTP and 443/HTTPS with response-time tracking and HTML title extraction.
+
+- [x] **Stage 4 — IP / ASN / RDAP Infrastructure Intelligence**
+  - Autonomous System Number (ASN) intelligence and BGP routing prefix mapping.
+  - RDAP registry queries with in-memory caching and timeout resilience.
+  - IP geolocation, organization attribution, and reverse DNS lookup.
+  - `IPObservation` point-in-time tracking across scan runs to detect infrastructure migration.
+
+- [x] **Stage 5 — Web Technology Fingerprinting & HTTP Security Analysis**
+  - Passive technology fingerprinting using headers, cookies, and DOM markers (Wappalyzer signatures).
+  - Explicit observed version extraction without speculative guessing.
+  - HTTP security header evaluation (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy).
+  - Passive TLS session inspection with direct IP pinning (`socket.create_connection`) preserving TLS Server Name Indication (SNI) to prevent DNS rebinding attacks.
+
+- [x] **Stage 6 — Vulnerability Intelligence & CVE Correlation**
+  - Integration with NIST National Vulnerability Database (NVD) via CPE 2.3 match criteria.
+  - Cross-referencing against CISA Known Exploited Vulnerabilities (KEV) catalog.
+  - Strict separation of observed facts from probabilistic CVE matches: findings default to `requires_verification`.
+  - Evidence hashes (SHA-256) generated for every correlated CVE record.
+
+- [x] **Stage 7 — Asset Correlation Engine & Attack-Surface Graph**
+  - Deterministic graph topology: Organization → Domain → Subdomain → IP → ASN → Service → Technology → Vulnerability / Certificate.
+  - Strictly prevents false shared-ownership inferences (e.g. shared cloud CDNs/ASNs).
+  - Graph traversal endpoints returning nodes, edges, cycle resistance, and statistics.
+  - ScanRun point-in-time historical graph isolation.
+
+- [x] **Stage 8 — Findings, Contextual Risk Scoring & Evidence Integrity**
+  - Explainable factor-based contextual risk scoring formula (0–100):
+    $$\text{Risk Score} = \text{Base CVSS} + \text{KEV Bonus (+15)} + \text{Internet Exposure (+10)} + \text{Confidence Adjustment (+5/-10)}$$
+  - Categorization into CRITICAL, HIGH, MEDIUM, LOW, and INFO.
+  - Deduplication and idempotency across repeated scans.
+  - Cryptographic evidence validation linking findings to raw observations.
+
+- [x] **Stage 9 — Attack Surface Monitoring & Assessment Snapshots**
+  - Complete Assessment Snapshot architecture ensuring only coherent point-in-time states are diffed.
+  - Disqualification of isolated modular runs (e.g., preventing false service removals like run #21 → #22).
+  - First-snapshot baseline semantics (*"Baseline Established — No Prior Snapshot for Diffing"*).
+  - Deterministic change detection: `ADDED`, `REMOVED`, and `MODIFIED` across subdomains, DNS records, IPs, services, technologies, vulnerabilities, and certificates.
+
+- [x] **Stage 10 — React Dashboard & Investigation Management UI**
+  - Premium glassmorphic cybersecurity dashboard built with React 18, TypeScript, and Vite.
+  - 9 integrated operational views:
+    1. **Overview Dashboard:** Attack surface metrics, risk posture, discovery distribution, and one-click quick actions.
+    2. **Subdomain Inventory:** Searchable hostname table, resolving state filters, tags, and CT provenance.
+    3. **DNS Infrastructure:** A, AAAA, CNAME, MX, NS, TXT record mapping with resolver telemetry.
+    4. **IP & ASN Intelligence:** Autonomous System details, routing prefixes, and reverse DNS mapping.
+    5. **Services & Technologies:** HTTP status, titles, security headers (HSTS, CSP, XFO, etc.), and TLS cipher/cert metadata.
+    6. **Vulnerabilities & CVEs:** Correlated CVEs, CVSS severity breakdown, and CISA KEV badges.
+    7. **Findings & Risk Scoring:** Factor breakdown (Base + KEV + Exposure + Confidence), evidence hashes, and remediation notes.
+    8. **Monitoring & Changes:** Assessment snapshot selector, snapshot capture, baseline indicator, and diffing table.
+    9. **Attack Surface Graph:** Interactive 2D canvas with node filtering, edge badges, and detail inspection drawers.
+  - Step-by-step pipeline execution triggers with execution duration and JSON telemetry inspector.
+  - Production frontend build verified with 0 TypeScript/bundling errors.
+
+- [x] **Automated Testing Suite**
+  - 265 / 265 unit and integration tests passing (`pytest tests/ -v`):
+    - `tests/test_auth.py`: 13 passed
+    - `tests/test_correlation_graph.py`: 24 passed
+    - `tests/test_ct_discovery.py`: 25 passed
+    - `tests/test_dns_reachability.py`: 34 passed
+    - `tests/test_findings_risk.py`: 22 passed
+    - `tests/test_health.py`: 3 passed
+    - `tests/test_ip_asn_rdap.py`: 35 passed
+    - `tests/test_models.py`: 7 passed
+    - `tests/test_monitoring_changes.py`: 33 passed
+    - `tests/test_technology_security.py`: 49 passed
+    - `tests/test_vulnerability_intelligence.py`: 20 passed
+
+---
+
+### Future Implementation Roadmap (Stages 11 – 13)
+
+- [ ] **Stage 11 — AI Security Analyst (Groq LLM Integration)**
+  - Automated natural language executive threat summaries and context narratives.
+  - Remediation recommendations prioritizing actionable, high-exposure findings.
+  - Analysis of correlated vulnerabilities against organizational asset exposure.
+- [ ] **Stage 12 — Automated PDF Report Generation (ReportLab)**
+  - Executive summary and technical intelligence PDF export.
+  - Visual attack surface breakdown, risk matrices, and cryptographic evidence audit logs.
+- [ ] **Stage 13 — Production Deployment, CI/CD & Benchmarking**
+  - Multi-stage production Docker Compose orchestration.
+  - Continuous integration workflows for automated testing and linting.
+  - Performance benchmarking for large-scale multi-thousand asset targets.
